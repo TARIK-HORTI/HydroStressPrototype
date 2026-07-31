@@ -1,0 +1,38 @@
+# Environnement virtuel
+.venv/
+venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Variables d'environnement
+.env
+
+# Logs
+*.log
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Sorties Python
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Modèles temporaires
+models/*.pkl
+models/*.joblib
+
+# Résultats temporaires
+outputs/

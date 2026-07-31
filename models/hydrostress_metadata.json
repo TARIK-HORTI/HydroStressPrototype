@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-07-30T23:48:13.218530",
+  "random_state": 42,
+  "feature_columns": [
+    "NDVI_mean",
+    "NDWI_mean",
+    "MSI_mean",
+    "SAVI_mean",
+    "EVI_mean",
+    "NDVI_min",
+    "NDVI_max",
+    "NDVI_std",
+    "NDWI_std",
+    "MSI_min",
+    "MSI_max",
+    "MSI_std",
+    "precipitation_total_30j",
+    "precipitation_total_7j",
+    "precipitation_mean",
+    "max_consecutive_dry_days",
+    "rainy_days_count",
+    "temperature_mean",
+    "temperature_max",
+    "temperature_min",
+    "humidity_mean",
+    "humidity_min",
+    "day_of_year_sin",
+    "day_of_year_cos"
+  ],
+  "label_column": "stress_class",
+  "best_params": {
+    "rf__max_depth": 10,
+    "rf__min_samples_leaf": 1,
+    "rf__min_samples_split": 2,
+    "rf__n_estimators": 100
+  },
+  "training_samples": 425,
+  "feature_count": 24
+}
