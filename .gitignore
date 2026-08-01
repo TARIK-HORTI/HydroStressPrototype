@@ -32,7 +32,7 @@ Thumbs.db
 
 # Modèles temporaires
 models/*.pkl
-models/*.joblib
+
 
 # Résultats temporaires
 outputs/
