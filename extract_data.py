@@ -150,28 +150,28 @@ class SentinelDataExtractor:
     Extraction et traitement des données Sentinel-2 depuis Google Earth Engine.
     """
 
-def __init__(self):
-    """Initialise la connexion à Google Earth Engine."""
-    try:
-        service_account_info = json.loads(
-            st.secrets["GCP_SERVICE_ACCOUNT"]
-        )
+    def __init__(self):
+        """Initialise la connexion à Google Earth Engine."""
+        try:
+            service_account_info = json.loads(
+                st.secrets["GCP_SERVICE_ACCOUNT"]
+            )
 
-        credentials = service_account.Credentials.from_service_account_info(
-            service_account_info,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
 
-        ee.Initialize(
-            credentials=credentials,
-            project=service_account_info["project_id"]
-        )
+            ee.Initialize(
+                credentials=credentials,
+                project=service_account_info["project_id"]
+            )
 
-        logger.info("✓ Connexion Google Earth Engine établie")
+            logger.info("✓ Connexion Google Earth Engine établie")
 
-    except Exception as e:
-        logger.error(f"Erreur Earth Engine : {e}")
-        raise
+        except Exception as e:
+            logger.error(f"Erreur Earth Engine : {e}")
+            raise
 
     def create_geometry(self, coordinates: List[List[float]]) -> ee.Geometry:
         """
@@ -586,6 +586,13 @@ class DataPipeline:
     def __init__(self):
         """Initialise les extracteurs."""
         self.sentinel = SentinelDataExtractor()
+        import inspect
+
+        logger.info(f"Type : {type(self.sentinel)}")
+        logger.info(f"Fichier : {inspect.getfile(SentinelDataExtractor)}")
+        logger.info(f"create_geometry : {hasattr(self.sentinel, 'create_geometry')}")
+        logger.info(f"Méthodes : {dir(self.sentinel)}")
+        
         self.chirps = CHIRPSExtractor()
         self.era5 = ERA5Extractor()
         logger.info("✓ Pipeline de données initialisé")
