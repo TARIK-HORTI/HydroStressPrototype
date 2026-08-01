@@ -22,6 +22,9 @@ from typing import Dict, List, Any
 import logging
 from shapely.geometry import Polygon, mapping
 from shapely.ops import unary_union
+import json
+import streamlit as st
+from google.oauth2 import service_account
 
 # Configuration du logging
 logging.basicConfig(
@@ -149,13 +152,26 @@ class SentinelDataExtractor:
 
     def __init__(self):
         """Initialise la connexion à Google Earth Engine."""
-        try:
-            ee.Initialize()
+       try:
+           service_account_info = json.loads(
+              st.secrets["GCP_SERVICE_ACCOUNT"]
+            )
+
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+
+            ee.Initialize(
+                credentials=credentials,
+                project=service_account_info["project_id"]
+            )
+
             logger.info("✓ Connexion Google Earth Engine établie")
+
         except Exception as e:
-            logger.error(f"✗ Erreur connexion EE : {e}")
-            raise RuntimeError("Impossible d'initialiser Earth Engine. "
-                               "Exécutez 'earthengine authenticate'.") from e
+            logger.error(f"Erreur Earth Engine : {e}")
+            raise
 
     def create_geometry(self, coordinates: List[List[float]]) -> ee.Geometry:
         """
