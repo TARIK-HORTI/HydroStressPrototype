@@ -22,7 +22,6 @@ from typing import Dict, List, Any
 import logging
 from shapely.geometry import Polygon, mapping
 from shapely.ops import unary_union
-import json
 import streamlit as st
 from google.oauth2 import service_account
 
@@ -153,13 +152,13 @@ class SentinelDataExtractor:
     def __init__(self):
         """Initialise la connexion à Google Earth Engine."""
         try:
-            service_account_info = json.loads(
+            service_account_info = dict(
                 st.secrets["GCP_SERVICE_ACCOUNT"]
             )
 
             credentials = service_account.Credentials.from_service_account_info(
-                service_account_info,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                service_account_info
+                
             )
 
             ee.Initialize(
@@ -592,7 +591,7 @@ class DataPipeline:
         logger.info(f"Fichier : {inspect.getfile(SentinelDataExtractor)}")
         logger.info(f"create_geometry : {hasattr(self.sentinel, 'create_geometry')}")
         logger.info(f"Méthodes : {dir(self.sentinel)}")
-        
+
         self.chirps = CHIRPSExtractor()
         self.era5 = ERA5Extractor()
         logger.info("✓ Pipeline de données initialisé")
