@@ -36,3 +36,9 @@ models/*.pkl
 
 # Résultats temporaires
 outputs/
+
+str-hyd.json
+
+test_ee.py
+
+predictions_log.jsonl
