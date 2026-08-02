@@ -157,8 +157,11 @@ class SentinelDataExtractor:
             )
 
             credentials = service_account.Credentials.from_service_account_info(
-                service_account_info
-                
+                service_account_info,
+                scopes=[
+                    "https://www.googleapis.com/auth/earthengine",
+                    "https://www.googleapis.com/auth/cloud-platform",
+                ],
             )
 
             ee.Initialize(
@@ -166,10 +169,10 @@ class SentinelDataExtractor:
                 project=service_account_info["project_id"]
             )
 
-            logger.info("✓ Connexion Google Earth Engine établie")
+            logger.info("✓ Earth Engine initialisé")
 
         except Exception as e:
-            logger.error(f"Erreur Earth Engine : {e}")
+            logger.exception(e)
             raise
 
     def create_geometry(self, coordinates: List[List[float]]) -> ee.Geometry:
