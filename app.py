@@ -210,7 +210,7 @@ def display_weather_charts(chirps_df: pd.DataFrame, era5_df: pd.DataFrame):
             color_discrete_sequence=["#3b82f6"],
         )
         fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     if not era5_df.empty:
         fig2 = px.line(
@@ -219,7 +219,7 @@ def display_weather_charts(chirps_df: pd.DataFrame, era5_df: pd.DataFrame):
             labels={"value": "Valeur", "date": "Date", "variable": "Mesure"},
         )
         fig2.update_layout(height=350)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     # Résumé métriques
     c1, c2, c3, c4 = st.columns(4)
@@ -285,7 +285,7 @@ def display_prediction(prediction: dict):
             height=320,
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col2:
         st.metric("Classe prédite", prediction["class_name"])
@@ -590,7 +590,7 @@ def page_dashboard():
                 }
                 for p in preds
             ])
-            st.dataframe(df_log, use_container_width=True)
+            st.dataframe(df_log, width="stretch")
 
 
 # ---------------------------------------------------------------------------
