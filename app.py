@@ -23,6 +23,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import json
 
 # Import des modules du projet
 from extract_data import DataPipeline, validate_geometry
@@ -49,24 +50,133 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _CUSTOM_CSS = """
 <style>
-    .main { padding: 0rem 1rem; }
-    .metric-card {
-        background-color: #f8f9fa;
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #3b82f6;
-    }
-    .metric-value { font-size: 2.2rem; font-weight: bold; color: #1f2937; }
-    .metric-label { font-size: 0.9rem; color: #6b7280; margin-top: 0.5rem; }
-    .alert-box {
-        padding: 1rem 1.25rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-        border-left: 5px solid;
-    }
-    .alert-success { background-color: #dcfce7; border-left-color: #22c55e; }
-    .alert-warning { background-color: #fef3c7; border-left-color: #f59e0b; }
-    .alert-critical { background-color: #fee2e2; border-left-color: #ef4444; }
+
+/* ===========================
+   Fond général
+=========================== */
+.main {
+    background-color: #F8FAFC;
+}
+
+/* ===========================
+   Titres
+=========================== */
+h1 {
+    color: #1E3A8A;
+    font-weight:700;
+}
+
+h2, h3 {
+    color:#0F172A;
+    font-weight:600;
+}
+
+/* ===========================
+   Cartes
+=========================== */
+.metric-card{
+    background:#FFFFFF;
+    border-radius:18px;
+    padding:22px;
+    border-left:6px solid #2563EB;
+    box-shadow:0 4px 18px rgba(0,0,0,.08);
+    transition:all .25s ease;
+    margin-bottom:15px;
+}
+
+.metric-card:hover{
+    transform:translateY(-4px);
+    box-shadow:0 10px 28px rgba(0,0,0,.15);
+}
+
+/* ===========================
+   Valeur
+=========================== */
+.metric-value{
+    font-size:34px;
+    font-weight:bold;
+    color:#2563EB;
+    margin-top:8px;
+}
+
+/* ===========================
+   Nom
+=========================== */
+.metric-label{
+    color:#64748B;
+    font-size:15px;
+}
+
+/* ===========================
+   Alertes
+=========================== */
+
+.alert-box{
+    border-radius:15px;
+    padding:18px;
+    margin:15px 0;
+    font-size:17px;
+    font-weight:500;
+}
+
+.alert-success{
+    background:#DCFCE7;
+    color:#166534;
+    border-left:8px solid #22C55E;
+}
+
+.alert-warning{
+    background:#FEF3C7;
+    color:#92400E;
+    border-left:8px solid #F59E0B;
+}
+
+.alert-critical{
+    background:#FEE2E2;
+    color:#991B1B;
+    border-left:8px solid #EF4444;
+}
+
+/* ===========================
+   Boutons
+=========================== */
+
+.stButton>button{
+    background:#2563EB;
+    color:white;
+    border:none;
+    border-radius:12px;
+    padding:0.6rem 1.5rem;
+    font-weight:600;
+}
+
+.stButton>button:hover{
+    background:#1D4ED8;
+}
+
+/* ===========================
+   Sidebar
+=========================== */
+
+section[data-testid="stSidebar"]{
+    background:#1E293B;
+}
+
+section[data-testid="stSidebar"] *{
+    color:white;
+}
+
+/* ===========================
+   Métriques Streamlit
+=========================== */
+
+[data-testid="metric-container"]{
+    border-radius:15px;
+    background:white;
+    padding:15px;
+    box-shadow:0 4px 15px rgba(0,0,0,.08);
+}
+
 </style>
 """
 st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
