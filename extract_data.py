@@ -1,31 +1,33 @@
 """
 extract_data.py
 ================
-Module d'extraction des données satellitaires (Sentinel-2, CHIRPS, ERA5-Land)
-et calcul des indices spectraux pour l'analyse du stress hydrique.
+Extraction des données satellitaires (Sentinel-2, CHIRPS, ERA5-Land) et calcul
+des indices spectraux pour l'analyse du stress hydrique dans la province
+d'Errachidia.
 
-Fonctionnalités corrigées :
-- Extraction Sentinel-2 (B2, B3, B4, B5, B8, B11, B12) avec masquage SCL strict
-- Calcul des indices : NDVI, NDWI, MSI, SAVI, EVI
-- CHIRPS via Earth Engine avec réduction côté serveur
-- ERA5-Land DAILY avec calcul de l'humidité relative depuis le point de rosée
-- Feature engineering temporel (cumuls, jours secs, cyclicité journalière)
-- Validation des géométries avec Shapely
-- Paramètres GEE sécurisés (maxPixels, bestEffort)
+- Sentinel-2 : composite médian sans nuages sur la fenêtre (réflectances
+  converties en [0, 1]), avec contrôle de la part de pixels valides.
+- CHIRPS : précipitations quotidiennes au centroïde de la parcelle.
+- ERA5-Land DAILY_AGGR : température moyenne / min / max journalières et
+  humidité relative calculée depuis le point de rosée.
+- Aucune valeur par défaut silencieuse : une source indisponible ou incomplète
+  lève DataUnavailableError.
 """
+
+import json
+import logging
+import math
+import os
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import ee
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Any
-import logging
-from shapely.geometry import Polygon, mapping
-from shapely.ops import unary_union
-import streamlit as st
-from google.oauth2 import service_account
+from shapely.geometry import Polygon
 
-# Configuration du logging
+from region import validate_in_region
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -39,152 +41,184 @@ SENTINEL2_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 CHIRPS_COLLECTION = "UCSB-CHG/CHIRPS/DAILY"
 ERA5_COLLECTION = "ECMWF/ERA5_LAND/DAILY_AGGR"
 
-# Classes SCL Sentinel-2 à conserver : 4=végétation, 5=sol nu
+# Classes SCL Sentinel-2 conservées : 4 = végétation, 5 = sol nu
 SCL_VALID_CLASSES = [4, 5]
+
+# Facteur d'échelle des réflectances S2 L2A (DN -> réflectance)
+S2_REFLECTANCE_SCALE = 1e-4
+
+# Part minimale de pixels valides (non nuageux) sur la parcelle
+MIN_VALID_PIXEL_FRACTION = 0.3
 
 # Seuil maximal de surface d'une parcelle (km²)
 MAX_PARCEL_AREA_KM2 = 10.0
 
-# Facteur de correction du sol pour SAVI (L=0.5 : couverture moyenne)
+# Facteur de correction du sol pour SAVI
 SAVI_L = 0.5
+
+# Fenêtre des features météo utilisées par le modèle (jours)
+WEATHER_WINDOW_DAYS = 30
+
+# Part minimale de jours présents dans une série météo
+MIN_WEATHER_COMPLETENESS = 0.8
+
+EE_SCOPES = [
+    "https://www.googleapis.com/auth/earthengine",
+    "https://www.googleapis.com/auth/cloud-platform",
+]
+
+
+class DataUnavailableError(RuntimeError):
+    """Une source de données est indisponible ou trop incomplète."""
+
+
+# ---------------------------------------------------------------------------
+# Authentification Earth Engine
+# ---------------------------------------------------------------------------
+def _service_account_from_streamlit() -> Optional[dict]:
+    """Lit le compte de service dans st.secrets s'il est configuré."""
+    try:
+        import streamlit as st
+        if "GCP_SERVICE_ACCOUNT" in st.secrets:
+            return dict(st.secrets["GCP_SERVICE_ACCOUNT"])
+    except Exception:
+        pass
+    return None
+
+
+def _service_account_from_env() -> Optional[dict]:
+    """Lit un fichier JSON de compte de service désigné par variable d'environnement."""
+    for var in ("EE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
+        path = os.environ.get(var)
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    return None
+
+
+def initialize_earth_engine() -> str:
+    """
+    Initialise Earth Engine, dans cet ordre :
+    1. Compte de service dans st.secrets["GCP_SERVICE_ACCOUNT"] (Streamlit Cloud)
+    2. Fichier JSON via EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS
+    3. Identifiants utilisateur de `earthengine authenticate` (projet via EE_PROJECT)
+
+    Returns:
+        str: méthode d'authentification utilisée
+    """
+    info = _service_account_from_streamlit() or _service_account_from_env()
+    if info:
+        from google.oauth2 import service_account
+        credentials = service_account.Credentials.from_service_account_info(info, scopes=EE_SCOPES)
+        ee.Initialize(credentials=credentials, project=info["project_id"])
+        logger.info("✓ Earth Engine initialisé (compte de service)")
+        return "service_account"
+
+    project = os.environ.get("EE_PROJECT")
+    ee.Initialize(project=project) if project else ee.Initialize()
+    logger.info("✓ Earth Engine initialisé (identifiants utilisateur)")
+    return "user"
 
 
 # ---------------------------------------------------------------------------
 # Utilitaires
 # ---------------------------------------------------------------------------
-def validate_geometry(coordinates: List[List[float]]) -> Polygon:
+def polygon_area_km2(poly: Polygon) -> float:
+    """Surface approximative (km²) d'un polygone en degrés, corrigée de la latitude."""
+    lat = poly.centroid.y
+    km_per_deg_lat = 111.32
+    km_per_deg_lon = 111.32 * math.cos(math.radians(lat))
+    return poly.area * km_per_deg_lat * km_per_deg_lon
+
+
+def validate_geometry(coordinates: List[List[float]], require_region: bool = True) -> Polygon:
     """
     Valide et retourne un polygone Shapely à partir des coordonnées GeoJSON.
 
-    Vérifie :
-    - Au moins 3 points distincts
-    - Polygone fermé (premier == dernier)
-    - Pas d'auto-intersection
-    - Surface < MAX_PARCEL_AREA_KM2
+    Vérifie : au moins 3 sommets, pas d'auto-intersection, surface
+    < MAX_PARCEL_AREA_KM2 et, par défaut, appartenance à la province d'Errachidia.
 
     Args:
         coordinates: Liste de [lon, lat] au format GeoJSON
+        require_region: Impose que la parcelle soit dans la zone d'étude
 
     Returns:
         Polygon: Géométrie validée
 
     Raises:
-        ValueError: Si la géométrie est invalide ou trop grande
+        ValueError: Si la géométrie est invalide, trop grande ou hors zone
     """
-    if len(coordinates) < 4:
-        raise ValueError(
-            f"Polygone invalide : {len(coordinates)} points (minimum 4 pour un polygone fermé)."
-        )
-
-    # Vérifie que le polygone est fermé
-    if coordinates[0] != coordinates[-1]:
+    if coordinates and coordinates[0] != coordinates[-1]:
         coordinates = coordinates + [coordinates[0]]
 
-    # Création du polygone Shapely (attention : GeoJSON = lon,lat ; Shapely = x,y)
+    if len(coordinates) < 4:
+        raise ValueError(
+            f"Polygone invalide : {len(coordinates) - 1} sommet(s), minimum 3."
+        )
+
+    if require_region:
+        validate_in_region(coordinates)
+
     poly = Polygon(coordinates)
-
     if not poly.is_valid:
-        # Tente de réparer les auto-intersections
-        poly = unary_union(poly)
-        if not poly.is_valid:
-            raise ValueError("Géométrie invalide : auto-intersection détectée et non réparable.")
+        raise ValueError("Géométrie invalide : le polygone s'auto-intersecte.")
 
-    area_km2 = poly.area * 111.32 * 111.32  # approximation grossière en km²
+    area_km2 = polygon_area_km2(poly)
     if area_km2 > MAX_PARCEL_AREA_KM2:
         raise ValueError(
             f"Parcelle trop grande : {area_km2:.2f} km² (max {MAX_PARCEL_AREA_KM2} km²)."
         )
 
-    logger.info(f"✓ Géométrie validée : {area_km2:.4f} km², {len(coordinates)} points")
+    logger.info(f"✓ Géométrie validée : {area_km2:.4f} km², {len(coordinates) - 1} sommets")
     return poly
 
 
 def compute_humidity_relative(temperature_c: float, dewpoint_c: float) -> float:
     """
-    Calcule l'humidité relative (%) depuis la température et le point de rosée.
-
-    Formule de Magnus-Tetens :
-        HR = 100 * es(Td) / es(T)
-        es(T) = 6.112 * exp((17.67 * T) / (T + 243.5))
-
-    Args:
-        temperature_c: Température à 2m (°C)
-        dewpoint_c: Point de rosée à 2m (°C)
-
-    Returns:
-        float: Humidité relative en %, clampée entre [0, 100]
+    Humidité relative (%) par la formule de Magnus-Tetens :
+        HR = 100 * es(Td) / es(T),  es(T) = 6.112 * exp(17.67 T / (T + 243.5))
     """
+    if np.isnan(temperature_c) or np.isnan(dewpoint_c):
+        return float("nan")
     if temperature_c <= dewpoint_c:
         return 100.0
-
     es_t = 6.112 * np.exp((17.67 * temperature_c) / (temperature_c + 243.5))
     es_td = 6.112 * np.exp((17.67 * dewpoint_c) / (dewpoint_c + 243.5))
-    hr = 100.0 * (es_td / es_t)
-    return float(np.clip(hr, 0.0, 100.0))
+    return float(np.clip(100.0 * es_td / es_t, 0.0, 100.0))
 
 
-def day_of_year_cyclic(date: datetime) -> tuple:
-    """
-    Encode le jour de l'année de manière cyclique via sin/cos.
+def day_of_year_cyclic(date: datetime) -> Tuple[float, float]:
+    """Encode le jour de l'année en (sin, cos) sur un cycle de 366 jours."""
+    angle = 2 * np.pi * date.timetuple().tm_yday / 366.0
+    return float(np.sin(angle)), float(np.cos(angle))
 
-    Cela permet au modèle de comprendre que le 31 décembre est proche
-    du 1er janvier, ce qu'un entier brut ne capture pas.
 
-    Args:
-        date: Date à encoder
+def max_consecutive_dry_days(precip: pd.Series, threshold: float = 0.1) -> int:
+    """Plus longue séquence de jours avec précipitation <= threshold."""
+    longest = current = 0
+    for dry in (precip <= threshold):
+        current = current + 1 if dry else 0
+        longest = max(longest, current)
+    return longest
 
-    Returns:
-        tuple: (sin_component, cos_component)
-    """
-    doy = date.timetuple().tm_yday
-    angle = 2 * np.pi * doy / 366.0
-    return np.sin(angle), np.cos(angle)
+
+def check_completeness(df: pd.DataFrame, expected_days: int, source: str) -> None:
+    """Lève DataUnavailableError si la série contient trop peu de jours."""
+    if df.empty or len(df) < MIN_WEATHER_COMPLETENESS * expected_days:
+        raise DataUnavailableError(
+            f"{source} : {len(df)} jour(s) disponibles sur {expected_days} attendus. "
+            f"Les données récentes peuvent ne pas être encore publiées : "
+            f"choisissez une date d'analyse plus ancienne."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Sentinel-2
 # ---------------------------------------------------------------------------
 class SentinelDataExtractor:
-    """
-    Extraction et traitement des données Sentinel-2 depuis Google Earth Engine.
-    """
-
-    def __init__(self):
-        """Initialise la connexion à Google Earth Engine."""
-        try:
-            service_account_info = dict(
-                st.secrets["GCP_SERVICE_ACCOUNT"]
-            )
-
-            credentials = service_account.Credentials.from_service_account_info(
-                service_account_info,
-                scopes=[
-                    "https://www.googleapis.com/auth/earthengine",
-                    "https://www.googleapis.com/auth/cloud-platform",
-                ],
-            )
-
-            ee.Initialize(
-                credentials=credentials,
-                project=service_account_info["project_id"]
-            )
-
-            logger.info("✓ Earth Engine initialisé")
-
-        except Exception as e:
-            logger.exception(e)
-            raise
+    """Extraction et traitement des données Sentinel-2 depuis Google Earth Engine."""
 
     def create_geometry(self, coordinates: List[List[float]]) -> ee.Geometry:
-        """
-        Crée une géométrie Earth Engine à partir des coordonnées de la parcelle.
-
-        Args:
-            coordinates: Liste de [lon, lat] formant un polygone fermé
-
-        Returns:
-            ee.Geometry: Géométrie Earth Engine
-        """
         return ee.Geometry.Polygon(coordinates)
 
     def get_sentinel2_collection(
@@ -192,160 +226,101 @@ class SentinelDataExtractor:
         geometry: ee.Geometry,
         start_date: str,
         end_date: str,
-        max_cloud: float = 20.0
+        max_cloud: float = 40.0,
     ) -> ee.ImageCollection:
-        """
-        Récupère la collection Sentinel-2 filtrée par date, localisation et couverture nuageuse.
-
-        Args:
-            geometry: Géométrie de la zone d'intérêt
-            start_date: Date de début (YYYY-MM-DD)
-            end_date: Date de fin (YYYY-MM-DD)
-            max_cloud: Pourcentage maximal de nuages accepté
-
-        Returns:
-            ee.ImageCollection: Collection d'images Sentinel-2 filtrées
-        """
-        collection = (
+        """Collection Sentinel-2 filtrée par date, emprise et couverture nuageuse de la tuile."""
+        return (
             ee.ImageCollection(SENTINEL2_COLLECTION)
             .filterBounds(geometry)
             .filterDate(start_date, end_date)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud))
         )
-        count = collection.size().getInfo()
-        logger.info(f"Collection Sentinel-2 : {count} image(s) trouvée(s)")
-        return collection
 
-    def mask_clouds(self, image: ee.Image) -> ee.Image:
+    def mask_and_scale(self, image: ee.Image) -> ee.Image:
         """
-        Masque les nuages, ombres et pixels non végétaux via la bande SCL.
-
-        Classes SCL conservées :
-        - 4 : Végétation
-        - 5 : Sol nu
-
-        Args:
-            image: Image Sentinel-2 avec bande SCL
-
-        Returns:
-            ee.Image: Image avec masque appliqué
+        Masque nuages/ombres via la bande SCL (classes 4 et 5 conservées) et
+        convertit les bandes optiques en réflectance [0, 1].
         """
         scl = image.select("SCL")
-        # Masque binaire : 1 si classe dans [4, 5], sinon 0
-        mask = scl.eq(4).Or(scl.eq(5))
-        return image.updateMask(mask)
+        mask = scl.eq(SCL_VALID_CLASSES[0]).Or(scl.eq(SCL_VALID_CLASSES[1]))
+        optical = (
+            image.select(["B2", "B4", "B8", "B11"])
+            .multiply(S2_REFLECTANCE_SCALE)
+        )
+        return ee.Image(optical.updateMask(mask).copyProperties(image, ["system:time_start"]))
+
+    def build_composite(self, collection: ee.ImageCollection) -> ee.Image:
+        """Composite médian des images masquées de la fenêtre."""
+        return collection.map(self.mask_and_scale).median()
 
     def calculate_ndvi(self, image: ee.Image) -> ee.Image:
         """NDVI = (NIR - Red) / (NIR + Red)"""
-        nir = image.select("B8")
-        red = image.select("B4")
-        ndvi = nir.subtract(red).divide(nir.add(red)).rename("NDVI")
-        return ndvi
+        return image.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
     def calculate_ndwi(self, image: ee.Image) -> ee.Image:
-        """NDWI = (NIR - SWIR) / (NIR + SWIR)"""
-        nir = image.select("B8")
-        swir = image.select("B11")
-        ndwi = nir.subtract(swir).divide(nir.add(swir)).rename("NDWI")
-        return ndwi
+        """NDWI (Gao) = (NIR - SWIR) / (NIR + SWIR)"""
+        return image.normalizedDifference(["B8", "B11"]).rename("NDWI")
 
     def calculate_msi(self, image: ee.Image) -> ee.Image:
         """MSI = SWIR / NIR (valeurs élevées = stress hydrique)"""
-        swir = image.select("B11")
-        nir = image.select("B8")
-        msi = swir.divide(nir).rename("MSI")
-        return msi
+        return image.select("B11").divide(image.select("B8")).rename("MSI")
 
     def calculate_savi(self, image: ee.Image, L: float = SAVI_L) -> ee.Image:
-        """
-        SAVI = ((NIR - Red) / (NIR + Red + L)) * (1 + L)
-        Corrige le NDVI pour l'effet du sol nu.
-        """
+        """SAVI = ((NIR - Red) / (NIR + Red + L)) * (1 + L), réflectances en [0, 1]."""
         nir = image.select("B8")
         red = image.select("B4")
-        num = nir.subtract(red).multiply(1 + L)
-        den = nir.add(red).add(L)
-        savi = num.divide(den).rename("SAVI")
-        return savi
+        return nir.subtract(red).multiply(1 + L).divide(nir.add(red).add(L)).rename("SAVI")
 
     def calculate_evi(self, image: ee.Image) -> ee.Image:
-        """
-        EVI = 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)
-        Moins saturé que NDVI pour couverture dense.
-        """
+        """EVI = 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1), réflectances en [0, 1]."""
         nir = image.select("B8")
         red = image.select("B4")
         blue = image.select("B2")
-
-        num = nir.subtract(red).multiply(2.5)
-        den = nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1)
-        # Protection contre division par zéro ou valeurs négatives extrêmes
-        den = den.max(0.1)
-        evi = num.divide(den).rename("EVI")
-        return evi
+        den = nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1).max(0.1)
+        return nir.subtract(red).multiply(2.5).divide(den).rename("EVI")
 
     def compute_indices(self, image: ee.Image) -> ee.Image:
-        """
-        Calcule tous les indices spectraux et les ajoute comme bandes.
-
-        Args:
-            image: Image Sentinel-2 avec nuages masqués
-
-        Returns:
-            ee.Image: Image enrichie des 5 indices spectraux
-        """
-        indices = [
+        """Retourne une image contenant les 5 indices spectraux."""
+        return ee.Image.cat([
             self.calculate_ndvi(image),
             self.calculate_ndwi(image),
             self.calculate_msi(image),
             self.calculate_savi(image),
             self.calculate_evi(image),
-        ]
-        return image.addBands(indices)
+        ])
+
+    def valid_pixel_fraction(self, composite: ee.Image, geometry: ee.Geometry, scale: int = 10) -> float:
+        """Part des pixels de la parcelle qui ont au moins une observation valide."""
+        valid = composite.select("B8").mask().gt(0).rename("valid")
+        stats = valid.unmask(0).reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=geometry, scale=scale,
+            maxPixels=1e9, bestEffort=True,
+        ).getInfo()
+        return float(stats.get("valid") or 0.0)
 
     def extract_statistics(
         self,
-        image: ee.Image,
+        indices: ee.Image,
         geometry: ee.Geometry,
-        scale: int = 10
+        scale: int = 10,
     ) -> Dict[str, Dict[str, float]]:
-        """
-        Extrait les statistiques (moyenne, min, max, écart-type) des indices
-        sur la parcelle via reduceRegion.
-
-        Args:
-            image: Image avec indices spectraux
-            geometry: Géométrie de la parcelle
-            scale: Résolution spatiale en mètres
-
-        Returns:
-            Dict: Statistiques par indice
-        """
-        indices = ["NDVI", "NDWI", "MSI", "SAVI", "EVI"]
-        stats = {}
-
+        """Moyenne, min, max et écart-type de chaque indice sur la parcelle (un seul appel)."""
         reducer = (
             ee.Reducer.mean()
             .combine(ee.Reducer.minMax(), sharedInputs=True)
             .combine(ee.Reducer.stdDev(), sharedInputs=True)
         )
+        info = indices.reduceRegion(
+            reducer=reducer, geometry=geometry, scale=scale,
+            maxPixels=1e9, bestEffort=True,
+        ).getInfo()
 
-        for idx in indices:
-            band = image.select(idx)
-            result = band.reduceRegion(
-                reducer=reducer,
-                geometry=geometry,
-                scale=scale,
-                maxPixels=1e13,
-                bestEffort=True,
-            )
-            info = result.getInfo()
-            stats[idx] = {
-                "mean": float(info.get(f"{idx}_mean", np.nan)),
-                "min": float(info.get(f"{idx}_min", np.nan)),
-                "max": float(info.get(f"{idx}_max", np.nan)),
-                "stdDev": float(info.get(f"{idx}_stdDev", np.nan)),
-            }
+        stats = {}
+        for idx in ["NDVI", "NDWI", "MSI", "SAVI", "EVI"]:
+            values = {k: info.get(f"{idx}_{k}") for k in ["mean", "min", "max", "stdDev"]}
+            if any(v is None for v in values.values()):
+                raise DataUnavailableError(f"Sentinel-2 : aucune valeur valide pour {idx} sur la parcelle.")
+            stats[idx] = {k: float(v) for k, v in values.items()}
 
         logger.info("✓ Statistiques Sentinel-2 extraites")
         return stats
@@ -355,112 +330,57 @@ class SentinelDataExtractor:
 # CHIRPS
 # ---------------------------------------------------------------------------
 class CHIRPSExtractor:
-    """
-    Extraction des précipitations CHIRPS via Earth Engine avec réduction côté serveur.
-    """
+    """Précipitations CHIRPS quotidiennes via Earth Engine."""
 
-    def __init__(self):
-        logger.info("✓ CHIRPSExtractor initialisé")
-
-    def get_precipitation_series(
-        self,
-        geometry: ee.Geometry,
-        start_date: str,
-        end_date: str
-    ) -> pd.DataFrame:
+    def get_precipitation_series(self, geometry: ee.Geometry, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        Récupère la série temporelle des précipitations CHIRPS quotidiennes.
-
-        Args:
-            geometry: Géométrie EE (point centroiïde recommandé)
-            start_date: Date de début (YYYY-MM-DD)
-            end_date: Date de fin (YYYY-MM-DD)
-
-        Returns:
-            pd.DataFrame: Colonnes [date, precipitation_mm]
+        Série quotidienne [date, precipitation_mm] entre start_date (inclus)
+        et end_date (exclu).
         """
+        col = (
+            ee.ImageCollection(CHIRPS_COLLECTION)
+            .filterBounds(geometry)
+            .filterDate(start_date, end_date)
+        )
+
+        def extract_feature(img):
+            precip = img.reduceRegion(
+                reducer=ee.Reducer.first(), geometry=geometry, scale=5000, maxPixels=1e9,
+            ).get("precipitation")
+            return ee.Feature(None, {"date": img.date().format("YYYY-MM-dd"), "precipitation_mm": precip})
+
         try:
-            col = (
-                ee.ImageCollection(CHIRPS_COLLECTION)
-                .filterBounds(geometry)
-                .filterDate(start_date, end_date)
-            )
-
-            def extract_feature(img):
-                date_str = img.date().format("YYYY-MM-dd")
-                precip = img.reduceRegion(
-                    reducer=ee.Reducer.first(),
-                    geometry=geometry,
-                    scale=5000,
-                    maxPixels=1e9,
-                ).get("precipitation")
-                return ee.Feature(None, {"date": date_str, "precipitation_mm": precip})
-
             features = col.map(extract_feature).getInfo()
-            rows = []
-            for feat in features.get("features", []):
-                props = feat["properties"]
-                rows.append({
-                    "date": pd.to_datetime(props["date"]),
-                    "precipitation_mm": float(props.get("precipitation_mm", 0.0) or 0.0),
-                })
-
-            df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
-            logger.info(f"✓ CHIRPS : {len(df)} jours extraits")
-            return df
-
         except Exception as e:
-            logger.error(f"Erreur CHIRPS : {e}")
-            return pd.DataFrame(columns=["date", "precipitation_mm"])
+            raise DataUnavailableError(f"CHIRPS : erreur Earth Engine ({e})") from e
+
+        rows = [
+            {"date": pd.to_datetime(f["properties"]["date"]),
+             "precipitation_mm": float(f["properties"]["precipitation_mm"])}
+            for f in features.get("features", [])
+            if f["properties"].get("precipitation_mm") is not None
+        ]
+        df = pd.DataFrame(rows, columns=["date", "precipitation_mm"])
+        df = df.sort_values("date").reset_index(drop=True)
+        logger.info(f"✓ CHIRPS : {len(df)} jours extraits")
+        return df
 
     def aggregate_features(self, df: pd.DataFrame) -> Dict[str, float]:
         """
-        Calcule les features agrégées à partir de la série CHIRPS.
-
-        Features :
-        - precipitation_total_30j : cumul sur la fenêtre
-        - precipitation_total_7j : cumul sur les 7 derniers jours
-        - precipitation_mean : moyenne journalière
-        - max_consecutive_dry_days : plus longue séquence sans pluie (>0.1mm)
-        - rainy_days_count : nombre de jours avec pluie
-
-        Args:
-            df: DataFrame CHIRPS avec colonnes [date, precipitation_mm]
-
-        Returns:
-            Dict: Features agrégées
+        Features sur les WEATHER_WINDOW_DAYS derniers jours de la série :
+        cumul 30 j, cumul 7 j, moyenne journalière, jours secs consécutifs max,
+        nombre de jours de pluie (> 0.1 mm).
         """
         if df.empty:
-            return {
-                "precipitation_total_30j": 0.0,
-                "precipitation_total_7j": 0.0,
-                "precipitation_mean": 0.0,
-                "max_consecutive_dry_days": 0.0,
-                "rainy_days_count": 0.0,
-            }
-
-        total_30j = df["precipitation_mm"].sum()
-        total_7j = df["precipitation_mm"].tail(7).sum() if len(df) >= 7 else total_30j
-        mean_daily = df["precipitation_mm"].mean()
-        rainy_days = (df["precipitation_mm"] > 0.1).sum()
-
-        # Calcul des jours secs consécutifs maximum
-        dry = (df["precipitation_mm"] <= 0.1).astype(int)
-        max_dry = 0
-        current = 0
-        for val in dry:
-            if val:
-                current += 1
-                max_dry = max(max_dry, current)
-            else:
-                current = 0
-
+            raise DataUnavailableError("CHIRPS : série vide.")
+        window = df.tail(WEATHER_WINDOW_DAYS)
+        precip = window["precipitation_mm"]
         return {
-            "precipitation_total_30j": float(total_30j),
-            "precipitation_total_7j": float(total_7j),
-            "precipitation_mean": float(mean_daily),
-            "max_consecutive_dry_days": float(max_dry),
-            "rainy_days_count": float(rainy_days),
+            "precipitation_total_30j": float(precip.sum()),
+            "precipitation_total_7j": float(precip.tail(7).sum()),
+            "precipitation_mean": float(precip.mean()),
+            "max_consecutive_dry_days": float(max_consecutive_dry_days(precip)),
+            "rainy_days_count": float((precip > 0.1).sum()),
         }
 
 
@@ -468,250 +388,196 @@ class CHIRPSExtractor:
 # ERA5-Land
 # ---------------------------------------------------------------------------
 class ERA5Extractor:
-    """
-    Extraction des données ERA5-Land (température, point de rosée)
-    et calcul de l'humidité relative.
-    """
+    """Température et humidité ERA5-Land (agrégats journaliers)."""
 
-    def __init__(self):
-        logger.info("✓ ERA5Extractor initialisé")
+    BANDS = ["temperature_2m", "temperature_2m_min", "temperature_2m_max", "dewpoint_temperature_2m"]
 
-    def get_climate_series(
-        self,
-        geometry: ee.Geometry,
-        start_date: str,
-        end_date: str
-    ) -> pd.DataFrame:
+    def get_climate_series(self, geometry: ee.Geometry, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        Récupère les données ERA5-Land quotidiennes.
+        Série quotidienne [date, temperature_c, temperature_min_c, temperature_max_c,
+        dewpoint_c, humidity_percent, humidity_min_percent].
 
-        Bandes utilisées :
-        - temperature_2m : température à 2m (K)
-        - dewpoint_temperature_2m : point de rosée à 2m (K)
-
-        L'humidité relative est calculée post-extraction.
-
-        Args:
-            geometry: Géométrie EE
-            start_date: Date de début (YYYY-MM-DD)
-            end_date: Date de fin (YYYY-MM-DD)
-
-        Returns:
-            pd.DataFrame: Colonnes [date, temperature_c, dewpoint_c, humidity_percent]
+        humidity_min_percent est estimée avec la température max du jour et le
+        point de rosée moyen (approximation usuelle FAO-56).
         """
-        try:
-            col = (
-                ee.ImageCollection(ERA5_COLLECTION)
-                .filterBounds(geometry)
-                .filterDate(start_date, end_date)
-                .select(["temperature_2m", "dewpoint_temperature_2m"])
+        col = (
+            ee.ImageCollection(ERA5_COLLECTION)
+            .filterBounds(geometry)
+            .filterDate(start_date, end_date)
+            .select(self.BANDS)
+        )
+
+        def extract_feature(img):
+            stats = img.reduceRegion(
+                reducer=ee.Reducer.first(), geometry=geometry, scale=11000, maxPixels=1e9,
             )
+            props = {b: stats.get(b) for b in self.BANDS}
+            props["date"] = img.date().format("YYYY-MM-dd")
+            return ee.Feature(None, props)
 
-            def extract_feature(img):
-                date_str = img.date().format("YYYY-MM-dd")
-                stats = img.reduceRegion(
-                    reducer=ee.Reducer.mean(),
-                    geometry=geometry,
-                    scale=10000,
-                    maxPixels=1e9,
-                )
-                return ee.Feature(None, {
-                    "date": date_str,
-                    "temperature_2m": stats.get("temperature_2m"),
-                    "dewpoint_temperature_2m": stats.get("dewpoint_temperature_2m"),
-                })
-
+        try:
             features = col.map(extract_feature).getInfo()
-            rows = []
-            for feat in features.get("features", []):
-                props = feat["properties"]
-                t_k = float(props.get("temperature_2m", np.nan))
-                td_k = float(props.get("dewpoint_temperature_2m", np.nan))
-
-                # Conversion Kelvin -> Celsius
-                t_c = t_k - 273.15 if not np.isnan(t_k) else np.nan
-                td_c = td_k - 273.15 if not np.isnan(td_k) else np.nan
-                hr = compute_humidity_relative(t_c, td_c) if not np.isnan(t_c) else np.nan
-
-                rows.append({
-                    "date": pd.to_datetime(props["date"]),
-                    "temperature_c": t_c,
-                    "dewpoint_c": td_c,
-                    "humidity_percent": hr,
-                })
-
-            df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
-            logger.info(f"✓ ERA5-Land : {len(df)} jours extraits")
-            return df
-
         except Exception as e:
-            logger.error(f"Erreur ERA5-Land : {e}")
-            return pd.DataFrame(columns=["date", "temperature_c", "dewpoint_c", "humidity_percent"])
+            raise DataUnavailableError(f"ERA5-Land : erreur Earth Engine ({e})") from e
+
+        rows = []
+        for feat in features.get("features", []):
+            p = feat["properties"]
+            if any(p.get(b) is None for b in self.BANDS):
+                continue
+            t, tmin, tmax, td = (float(p[b]) - 273.15 for b in self.BANDS)
+            rows.append({
+                "date": pd.to_datetime(p["date"]),
+                "temperature_c": t,
+                "temperature_min_c": tmin,
+                "temperature_max_c": tmax,
+                "dewpoint_c": td,
+                "humidity_percent": compute_humidity_relative(t, td),
+                "humidity_min_percent": compute_humidity_relative(tmax, td),
+            })
+
+        columns = ["date", "temperature_c", "temperature_min_c", "temperature_max_c",
+                   "dewpoint_c", "humidity_percent", "humidity_min_percent"]
+        df = pd.DataFrame(rows, columns=columns).sort_values("date").reset_index(drop=True)
+        logger.info(f"✓ ERA5-Land : {len(df)} jours extraits")
+        return df
 
     def aggregate_features(self, df: pd.DataFrame) -> Dict[str, float]:
-        """
-        Agrège les données climatiques sur la fenêtre temporelle.
-
-        Args:
-            df: DataFrame ERA5 avec colonnes [date, temperature_c, humidity_percent]
-
-        Returns:
-            Dict: Features agrégées (moyennes, extrêmes)
-        """
+        """Features sur les WEATHER_WINDOW_DAYS derniers jours de la série."""
         if df.empty:
-            return {
-                "temperature_mean": 25.0,
-                "temperature_max": 30.0,
-                "temperature_min": 20.0,
-                "humidity_mean": 60.0,
-                "humidity_min": 40.0,
-            }
-
+            raise DataUnavailableError("ERA5-Land : série vide.")
+        window = df.tail(WEATHER_WINDOW_DAYS)
         return {
-            "temperature_mean": float(df["temperature_c"].mean()),
-            "temperature_max": float(df["temperature_c"].max()),
-            "temperature_min": float(df["temperature_c"].min()),
-            "humidity_mean": float(df["humidity_percent"].mean()),
-            "humidity_min": float(df["humidity_percent"].min()),
+            "temperature_mean": float(window["temperature_c"].mean()),
+            "temperature_max": float(window["temperature_max_c"].max()),
+            "temperature_min": float(window["temperature_min_c"].min()),
+            "humidity_mean": float(window["humidity_percent"].mean()),
+            "humidity_min": float(window["humidity_min_percent"].min()),
         }
 
 
 # ---------------------------------------------------------------------------
-# Pipeline global
+# Assemblage
 # ---------------------------------------------------------------------------
+def assemble_features(
+    sentinel_stats: Dict[str, Dict[str, float]],
+    chirps_features: Dict[str, float],
+    era5_features: Dict[str, float],
+    date: datetime,
+) -> Dict[str, float]:
+    """Construit le vecteur des 24 features attendu par le modèle."""
+    sin_doy, cos_doy = day_of_year_cyclic(date)
+    s = sentinel_stats
+    return {
+        "NDVI_mean": s["NDVI"]["mean"],
+        "NDWI_mean": s["NDWI"]["mean"],
+        "MSI_mean": s["MSI"]["mean"],
+        "SAVI_mean": s["SAVI"]["mean"],
+        "EVI_mean": s["EVI"]["mean"],
+        "NDVI_min": s["NDVI"]["min"],
+        "NDVI_max": s["NDVI"]["max"],
+        "NDVI_std": s["NDVI"]["stdDev"],
+        "NDWI_std": s["NDWI"]["stdDev"],
+        "MSI_min": s["MSI"]["min"],
+        "MSI_max": s["MSI"]["max"],
+        "MSI_std": s["MSI"]["stdDev"],
+        **chirps_features,
+        **era5_features,
+        "day_of_year_sin": sin_doy,
+        "day_of_year_cos": cos_doy,
+    }
+
+
 class DataPipeline:
-    """
-    Pipeline complet d'extraction et d'agrégation des données.
-    Combine Sentinel-2, CHIRPS et ERA5-Land en un vecteur de features unique.
-    """
+    """Combine Sentinel-2, CHIRPS et ERA5-Land en un vecteur de features."""
 
-    def __init__(self):
-        """Initialise les extracteurs."""
+    def __init__(self, initialize: bool = True):
+        if initialize:
+            initialize_earth_engine()
         self.sentinel = SentinelDataExtractor()
-        import inspect
-
-        logger.info(f"Type : {type(self.sentinel)}")
-        logger.info(f"Fichier : {inspect.getfile(SentinelDataExtractor)}")
-        logger.info(f"create_geometry : {hasattr(self.sentinel, 'create_geometry')}")
-        logger.info(f"Méthodes : {dir(self.sentinel)}")
-
         self.chirps = CHIRPSExtractor()
         self.era5 = ERA5Extractor()
         logger.info("✓ Pipeline de données initialisé")
+
+    def extract_sentinel(
+        self, ee_geometry: ee.Geometry, end_dt: datetime, lookback_days: int
+    ) -> Tuple[Dict[str, Dict[str, float]], int, float, int]:
+        """
+        Composite Sentinel-2 sur la fenêtre ; élargit à 60 jours si aucune image
+        ou trop de pixels masqués.
+
+        Returns:
+            (stats, nombre d'images, part de pixels valides, fenêtre utilisée)
+        """
+        end_str = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        for window in sorted({lookback_days, max(lookback_days, 60)}):
+            start_str = (end_dt - timedelta(days=window)).strftime("%Y-%m-%d")
+            collection = self.sentinel.get_sentinel2_collection(ee_geometry, start_str, end_str)
+            count = collection.size().getInfo()
+            logger.info(f"Sentinel-2 : {count} image(s) sur {window} jours")
+            if count == 0:
+                continue
+            composite = self.sentinel.build_composite(collection)
+            fraction = self.sentinel.valid_pixel_fraction(composite, ee_geometry)
+            if fraction < MIN_VALID_PIXEL_FRACTION:
+                logger.warning(f"Sentinel-2 : seulement {fraction:.0%} de pixels valides")
+                continue
+            stats = self.sentinel.extract_statistics(self.sentinel.compute_indices(composite), ee_geometry)
+            return stats, count, fraction, window
+
+        raise DataUnavailableError(
+            "Sentinel-2 : pas assez d'images sans nuages sur la parcelle, même sur 60 jours."
+        )
 
     def extract_all_data(
         self,
         coordinates: List[List[float]],
         analysis_date: str,
-        lookback_days: int = 30
+        lookback_days: int = 30,
     ) -> Dict[str, Any]:
         """
-        Extrait toutes les données pour une parcelle et une date donnée.
+        Extrait toutes les données pour une parcelle et une date.
 
         Args:
-            coordinates: Coordonnées GeoJSON [lon, lat] de la parcelle
-            analysis_date: Date d'analyse (YYYY-MM-DD)
-            lookback_days: Fenêtre temporelle en jours (défaut 30)
-
-        Returns:
-            Dict: Dictionnaire structuré avec toutes les features
+            coordinates: Coordonnées GeoJSON [lon, lat]
+            analysis_date: Date d'analyse (YYYY-MM-DD), incluse
+            lookback_days: Fenêtre du composite Sentinel-2 et des graphiques météo.
+                Les features météo du modèle portent toujours sur 30 jours.
         """
         logger.info(f"Extraction des données pour le {analysis_date}")
+        validate_geometry(coordinates)
 
-        # Validation de la géométrie
-        shapely_poly = validate_geometry(coordinates)
-
-        # Fenêtre temporelle
         end_dt = datetime.strptime(analysis_date, "%Y-%m-%d")
-        start_dt = end_dt - timedelta(days=lookback_days)
-        start_str = start_dt.strftime("%Y-%m-%d")
-        end_str = end_dt.strftime("%Y-%m-%d")
+        weather_days = max(lookback_days, WEATHER_WINDOW_DAYS)
+        weather_start = (end_dt - timedelta(days=weather_days - 1)).strftime("%Y-%m-%d")
+        end_exclusive = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Géométrie Earth Engine
         ee_geometry = self.sentinel.create_geometry(coordinates)
-        centroid = ee_geometry.centroid()
+        centroid = ee_geometry.centroid(maxError=1)
 
-        # -------------------------------------------------------------------
-        # 1. Sentinel-2
-        # -------------------------------------------------------------------
-        s2_collection = self.sentinel.get_sentinel2_collection(
-            ee_geometry, start_str, end_str
+        sentinel_stats, s2_count, valid_fraction, s2_window = self.extract_sentinel(
+            ee_geometry, end_dt, lookback_days
         )
 
-        s2_count = s2_collection.size().getInfo()
-        if s2_count == 0:
-            logger.warning("Aucune image Sentinel-2 disponible, élargissement de la fenêtre...")
-            # Fallback : fenêtre de 60 jours
-            start_dt = end_dt - timedelta(days=60)
-            start_str = start_dt.strftime("%Y-%m-%d")
-            s2_collection = self.sentinel.get_sentinel2_collection(
-                ee_geometry, start_str, end_str
-            )
-            s2_count = s2_collection.size().getInfo()
-            if s2_count == 0:
-                raise RuntimeError("Aucune image Sentinel-2 disponible même avec fenêtre élargie.")
-
-        # Image la plus récente
-        latest = s2_collection.sort("system:time_start", False).first()
-        masked = self.sentinel.mask_clouds(latest)
-        indexed = self.sentinel.compute_indices(masked)
-        sentinel_stats = self.sentinel.extract_statistics(indexed, ee_geometry)
-
-        # -------------------------------------------------------------------
-        # 2. CHIRPS
-        # -------------------------------------------------------------------
-        chirps_df = self.chirps.get_precipitation_series(centroid, start_str, end_str)
+        chirps_df = self.chirps.get_precipitation_series(centroid, weather_start, end_exclusive)
+        check_completeness(chirps_df.tail(WEATHER_WINDOW_DAYS), WEATHER_WINDOW_DAYS, "CHIRPS")
         chirps_features = self.chirps.aggregate_features(chirps_df)
 
-        # -------------------------------------------------------------------
-        # 3. ERA5-Land
-        # -------------------------------------------------------------------
-        era5_df = self.era5.get_climate_series(centroid, start_str, end_str)
+        era5_df = self.era5.get_climate_series(centroid, weather_start, end_exclusive)
+        check_completeness(era5_df.tail(WEATHER_WINDOW_DAYS), WEATHER_WINDOW_DAYS, "ERA5-Land")
         era5_features = self.era5.aggregate_features(era5_df)
 
-        # -------------------------------------------------------------------
-        # 4. Features temporelles cycliques
-        # -------------------------------------------------------------------
-        sin_doy, cos_doy = day_of_year_cyclic(end_dt)
+        features = assemble_features(sentinel_stats, chirps_features, era5_features, end_dt)
 
-        # -------------------------------------------------------------------
-        # 5. Assemblage du vecteur de features
-        # -------------------------------------------------------------------
-        features = {
-            # Indices spectraux — moyennes
-            "NDVI_mean": sentinel_stats["NDVI"]["mean"],
-            "NDWI_mean": sentinel_stats["NDWI"]["mean"],
-            "MSI_mean": sentinel_stats["MSI"]["mean"],
-            "SAVI_mean": sentinel_stats["SAVI"]["mean"],
-            "EVI_mean": sentinel_stats["EVI"]["mean"],
-            # Indices spectraux — min / max / std
-            "NDVI_min": sentinel_stats["NDVI"]["min"],
-            "NDVI_max": sentinel_stats["NDVI"]["max"],
-            "NDVI_std": sentinel_stats["NDVI"]["stdDev"],
-            "NDWI_std": sentinel_stats["NDWI"]["stdDev"],
-            "MSI_min": sentinel_stats["MSI"]["min"],
-            "MSI_max": sentinel_stats["MSI"]["max"],
-            "MSI_std": sentinel_stats["MSI"]["stdDev"],
-            # CHIRPS
-            "precipitation_total_30j": chirps_features["precipitation_total_30j"],
-            "precipitation_total_7j": chirps_features["precipitation_total_7j"],
-            "precipitation_mean": chirps_features["precipitation_mean"],
-            "max_consecutive_dry_days": chirps_features["max_consecutive_dry_days"],
-            "rainy_days_count": chirps_features["rainy_days_count"],
-            # ERA5-Land
-            "temperature_mean": era5_features["temperature_mean"],
-            "temperature_max": era5_features["temperature_max"],
-            "temperature_min": era5_features["temperature_min"],
-            "humidity_mean": era5_features["humidity_mean"],
-            "humidity_min": era5_features["humidity_min"],
-            # Temporel cyclique
-            "day_of_year_sin": float(sin_doy),
-            "day_of_year_cos": float(cos_doy),
-        }
-
-        result = {
+        logger.info("✓ Extraction complète et assemblée")
+        return {
             "features": features,
             "sentinel_stats": sentinel_stats,
+            "sentinel_meta": {
+                "image_count": s2_count,
+                "valid_pixel_fraction": valid_fraction,
+                "window_days": s2_window,
+            },
             "chirps_series": chirps_df,
             "era5_series": era5_df,
             "extraction_date": datetime.now().isoformat(),
@@ -719,13 +585,6 @@ class DataPipeline:
             "lookback_days": lookback_days,
         }
 
-        logger.info("✓ Extraction complète et assemblée")
-        return result
 
-
-# ---------------------------------------------------------------------------
-# Point d'entrée test
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Pipeline d'extraction HydroStress initialisé.")
-    print("Utilisation : pipeline = DataPipeline(); pipeline.extract_all_data(coords, date)")
+    print("Pipeline d'extraction HydroStress (province d'Errachidia).")
