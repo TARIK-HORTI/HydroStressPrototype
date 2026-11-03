@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import json
+import sklearn
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
@@ -43,28 +44,29 @@ INDEX_RANGES = {
     "EVI_mean": (-1.0, 1.0),
 }
 
-# Seuils d'alerte par indice (type de culture = générique ici)
-# Ces seuils sont indicatifs et devraient être ajustés par culture
+# Seuils indicatifs pour les parcelles irriguées des oasis d'Errachidia
+# (palmeraies avec cultures sous-jacentes, luzerne, céréales). Le sol nu
+# désertique environnant a un NDVI ~0.08-0.15. À affiner avec des relevés terrain.
 HEALTHY_RANGES = {
-    "NDVI": {"min": 0.3, "max": 0.8, "description": "Vigueur de la végétation"},
-    "NDWI": {"min": 0.2, "max": 0.7, "description": "Contenu en eau végétale"},
-    "MSI": {"min": 0.0, "max": 1.2, "description": "Stress hydrique (bas = sain)"},
-    "SAVI": {"min": 0.2, "max": 0.7, "description": "NDVI corrigé du sol"},
-    "EVI": {"min": 0.2, "max": 0.6, "description": "Indice amélioré de végétation"},
+    "NDVI": {"min": 0.25, "max": 0.75, "description": "Vigueur de la végétation"},
+    "NDWI": {"min": 0.0, "max": 0.5, "description": "Contenu en eau végétale"},
+    "MSI": {"min": 0.0, "max": 1.0, "description": "Stress hydrique (bas = sain)"},
+    "SAVI": {"min": 0.18, "max": 0.6, "description": "NDVI corrigé du sol"},
+    "EVI": {"min": 0.15, "max": 0.55, "description": "Indice amélioré de végétation"},
 }
 
 
 # ---------------------------------------------------------------------------
-# Recommandations structurées
+# Recommandations — province d'Errachidia
 # ---------------------------------------------------------------------------
 RECOMMENDATIONS_DB = {
     0: {  # Normal
         "level": "info",
         "title": "Stress hydrique normal",
         "actions": [
-            "Maintenir l'irrigation existante selon le calendrier cultural.",
-            "Continuer le suivi hebdomadaire des indices de végétation.",
-            "Surveiller l'évolution du NDWI pour anticiper tout changement.",
+            "Maintenir le calendrier d'irrigation actuel (tour d'eau de la séguia, khettara ou forage).",
+            "Continuer le suivi des indices toutes les 1 à 2 semaines (revisite Sentinel-2 : 5 jours).",
+            "En été (juin-août), anticiper : les besoins augmentent fortement avec des maximales > 40 °C.",
         ],
         "priority": "low",
     },
@@ -72,10 +74,10 @@ RECOMMENDATIONS_DB = {
         "level": "warning",
         "title": "Stress hydrique modéré détecté",
         "actions": [
-            "Augmenter la fréquence d'irrigation (+20 à 30 %% d'apport).",
-            "Surveiller les parcelles tous les 2 à 3 jours.",
-            "Vérifier le contenu en eau du sol (sonde ou estimation NDWI).",
-            "Envisager une irrigation de secours si sécheresse persistante.",
+            "Rapprocher les irrigations : +20 à 30 % d'apport, de préférence tôt le matin ou le soir.",
+            "Vérifier le réseau goutte-à-goutte (colmatage des goutteurs, pression) ou l'état des séguias.",
+            "Pailler le sol (palmes sèches, résidus de luzerne) pour limiter l'évaporation.",
+            "Surveiller la parcelle tous les 2 à 3 jours.",
         ],
         "priority": "medium",
     },
@@ -83,14 +85,32 @@ RECOMMENDATIONS_DB = {
         "level": "critical",
         "title": "Stress hydrique SÉVÈRE",
         "actions": [
-            "IRRIGATION PRIORITAIRE : augmenter les apports de +50 %% immédiatement.",
-            "Surveillance quotidienne obligatoire.",
-            "Vérifier le système d'irrigation (fuites, obstructions, pression).",
-            "Envisager des mesures d'urgence : paillage, filets d'ombrage, irrigation nocturne.",
-            "Contacter un agronome pour évaluation sur le terrain.",
+            "IRRIGATION PRIORITAIRE : augmenter les apports de +50 % dès que possible.",
+            "Prioriser les cultures pérennes (palmier dattier, olivier) si l'eau est limitée.",
+            "Contrôler le niveau du puits / forage et la salinité de l'eau d'irrigation.",
+            "Contacter l'ORMVA du Tafilalet ou un technicien agricole pour une visite terrain.",
         ],
         "priority": "high",
     },
+}
+
+# Conseils complémentaires par culture (classe 1 et 2)
+CROP_TIPS = {
+    "Palmier dattier": [
+        "Palmier dattier : irriguer en cuvette au pied, surtout pendant la nouaison et le grossissement des dattes (avril-septembre).",
+    ],
+    "Luzerne": [
+        "Luzerne : éviter la coupe pendant le pic de stress et irriguer juste après chaque coupe.",
+    ],
+    "Céréales (blé / orge)": [
+        "Céréales : le stress au tallage et à l'épiaison (février-avril) a l'impact le plus fort sur le rendement.",
+    ],
+    "Olivier": [
+        "Olivier : un apport à la floraison et au grossissement des fruits limite la chute de production.",
+    ],
+    "Maraîchage": [
+        "Maraîchage : passer à des irrigations courtes et fréquentes, ombrage léger aux heures chaudes.",
+    ],
 }
 
 
@@ -138,6 +158,13 @@ class HydroStressPredictor:
             self.metadata = json.load(f)
 
         self.feature_columns = self.metadata.get("feature_columns", [])
+
+        trained_with = self.metadata.get("sklearn_version")
+        if trained_with and trained_with != sklearn.__version__:
+            logger.warning(
+                f"Modèle entraîné avec scikit-learn {trained_with}, version installée "
+                f"{sklearn.__version__} : réentraînez le modèle si les prédictions échouent."
+            )
         logger.info(f"✓ Pipeline chargé : {len(self.feature_columns)} features")
 
     def validate_input(self, data: Dict[str, float]) -> List[str]:
@@ -212,6 +239,9 @@ class HydroStressPredictor:
         warnings = self.validate_input(data)
         if any("manquantes" in w for w in warnings):
             raise ValueError(f"Données incomplètes : {warnings}")
+        nan_features = [c for c in self.feature_columns if data[c] is None or np.isnan(data[c])]
+        if nan_features:
+            raise ValueError(f"Valeurs manquantes (NaN) : {nan_features}")
 
         # Préparation
         X = self.prepare_data(data)
@@ -289,18 +319,22 @@ class HydroStressPredictor:
         logger.info(f"✓ Batch de {len(data_list)} prédictions terminé")
         return pd.DataFrame(results)
 
-    def get_recommendations(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
+    def get_recommendations(self, prediction: Dict[str, Any], crop: Optional[str] = None) -> Dict[str, Any]:
         """
         Génère des recommandations structurées basées sur la prédiction.
 
         Args:
             prediction: Résultat de predict()
+            crop: Culture de la parcelle (voir region.CROPS), optionnelle
 
         Returns:
             Dict: Recommandations structurées (niveau, titre, actions, priorité)
         """
         class_idx = prediction["class_index"]
-        rec = RECOMMENDATIONS_DB.get(class_idx, RECOMMENDATIONS_DB[0]).copy()
+        rec = dict(RECOMMENDATIONS_DB.get(class_idx, RECOMMENDATIONS_DB[0]))
+        rec["actions"] = list(rec["actions"])
+        if crop and class_idx > 0:
+            rec["actions"] += CROP_TIPS.get(crop, [])
         rec["prediction_id"] = prediction.get("prediction_id")
         rec["confidence"] = prediction.get("confidence_percent")
         return rec
@@ -339,7 +373,8 @@ class HydroStressPredictor:
 
         return interpretation
 
-    def generate_report_data(self, prediction: Dict[str, Any], data: Dict[str, float]) -> Dict[str, Any]:
+    def generate_report_data(self, prediction: Dict[str, Any], data: Dict[str, float],
+                             crop: Optional[str] = None) -> Dict[str, Any]:
         """
         Génère un rapport structuré complet (données brutes, sans formatage).
 
@@ -353,7 +388,7 @@ class HydroStressPredictor:
         Returns:
             Dict: Rapport structuré
         """
-        recommendations = self.get_recommendations(prediction)
+        recommendations = self.get_recommendations(prediction, crop)
         interpretation = self.interpret_indices(data)
 
         return {

@@ -42,3 +42,6 @@ str-hyd.json
 test_ee.py
 
 predictions_log.jsonl
+# Datasets réels générés par build_dataset.py
+data/
+.pytest_cache/

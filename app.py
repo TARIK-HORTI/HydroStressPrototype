@@ -26,8 +26,12 @@ from pathlib import Path
 import json
 
 # Import des modules du projet
-from extract_data import DataPipeline, validate_geometry
+from extract_data import DataPipeline, DataUnavailableError, day_of_year_cyclic, validate_geometry
 from predict import HydroStressPredictor
+from region import (
+    CROPS, MAP_CENTER, MAP_ZOOM, MONTHLY_PRECIP_MM, MONTHLY_RH_MEAN, MONTHLY_TEMP_MEAN_C,
+    OASES, REGION_BBOX, REGION_NAME,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration Streamlit (DOIT être la première commande st)
@@ -166,6 +170,14 @@ section[data-testid="stSidebar"] *{
     color:white;
 }
 
+/* Listes déroulantes de la sidebar : texte sombre sur fond clair */
+section[data-testid="stSidebar"] [data-baseweb="select"] *,
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] input,
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] svg{
+    color:#0F172A;
+    -webkit-text-fill-color:#0F172A;
+}
+
 /* ===========================
    Métriques Streamlit
 =========================== */
@@ -228,18 +240,40 @@ def get_pipeline() -> DataPipeline:
 # ---------------------------------------------------------------------------
 # Composants d'affichage
 # ---------------------------------------------------------------------------
-def create_map() -> tuple:
+def create_map(center: tuple, zoom: int) -> tuple:
     """
-    Crée la carte Folium interactive avec outil de dessin.
+    Crée la carte Folium interactive avec outil de dessin, limitée à la
+    province d'Errachidia.
 
     Returns:
         tuple: (map_data, coordinates_list ou None)
     """
     st.subheader("🗺️ Délimitation de la parcelle")
-    st.caption("Dessinez un polygone ou un rectangle sur la carte. Surface max : 10 km².")
+    st.caption(
+        f"Dessinez un polygone ou un rectangle dans la zone d'étude ({REGION_NAME}). "
+        "Surface max : 10 km²."
+    )
 
-    # Centré sur une zone agricole (exemple : région de Marrakech, Maroc)
-    m = folium.Map(location=[31.63, -7.98], zoom_start=12, tiles="OpenStreetMap")
+    lon_min, lat_min, lon_max, lat_max = REGION_BBOX
+    m = folium.Map(
+        location=list(center), zoom_start=zoom, tiles=None,
+        min_lat=lat_min - 0.5, max_lat=lat_max + 0.5,
+        min_lon=lon_min - 0.5, max_lon=lon_max + 0.5, max_bounds=True,
+    )
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery", name="Satellite",
+    ).add_to(m)
+    folium.TileLayer("OpenStreetMap", name="OpenStreetMap").add_to(m)
+    folium.Rectangle(
+        bounds=[[lat_min, lon_min], [lat_max, lon_max]],
+        color="#2563EB", weight=2, fill=False, tooltip="Zone d'étude : province d'Errachidia",
+    ).add_to(m)
+    for name, (lat, lon) in OASES.items():
+        folium.CircleMarker(
+            location=[lat, lon], radius=4, color="#16a34a", fill=True, tooltip=name,
+        ).add_to(m)
+    folium.LayerControl().add_to(m)
 
     Draw(
         export=False,
@@ -403,9 +437,9 @@ def display_prediction(prediction: dict):
         st.metric("Probabilité dominante", f"{max(probs.values()):.1f} %")
 
 
-def display_recommendations(prediction: dict, predictor: HydroStressPredictor):
+def display_recommendations(prediction: dict, predictor: HydroStressPredictor, crop: str = None):
     """Affiche les recommandations agronomiques structurées."""
-    rec = predictor.get_recommendations(prediction)
+    rec = predictor.get_recommendations(prediction, crop)
 
     st.subheader("💡 Recommandations Agronomiques")
 
@@ -424,35 +458,44 @@ def display_recommendations(prediction: dict, predictor: HydroStressPredictor):
 # ---------------------------------------------------------------------------
 def page_home():
     """Page d'accueil et documentation."""
-    st.title("💧 HydroStress Prototype")
-    st.markdown("**Prédiction du stress hydrique des cultures par Machine Learning et télédétection**")
+    st.title("💧 HydroStress — Errachidia")
+    st.markdown(f"**Suivi du stress hydrique des cultures dans la {REGION_NAME}**")
 
     st.markdown("""
     ### 🚀 À propos
 
-    Cette application analyse le stress hydrique des parcelles agricoles en combinant :
+    L'application est dédiée aux oasis de la province d'Errachidia : vallée du Ziz,
+    Tafilalet (Erfoud, Rissani), Ghéris (Goulmima, Tinejdad) et Boudnib.
+    Elle combine :
 
-    - **🛰️ Sentinel-2** : indices spectraux (NDVI, NDWI, MSI, SAVI, EVI) à 10m de résolution
-    - **🌧️ CHIRPS** : précipitations quotidiennes à 0.05°
-    - **🌡️ ERA5-Land** : température, point de rosée, humidité relative calculée
-    - **🤖 Random Forest** : classification en 3 classes (Normal, Modéré, Sévère)
-    - **📊 Calibration** : probabilités calibrées par Platt scaling
+    - **🛰️ Sentinel-2** : composite sans nuages des indices NDVI, NDWI, MSI, SAVI, EVI (10 m)
+    - **🌧️ CHIRPS** : précipitations quotidiennes (~5 km)
+    - **🌡️ ERA5-Land** : températures min / moy / max et humidité relative (~9 km)
+    - **🤖 Random Forest calibré** : classification Normal / Modéré / Sévère
+    - **🌴 Recommandations** adaptées aux cultures locales (palmier dattier, luzerne, céréales, olivier)
 
     ### 📋 Workflow
-    1. Naviguez vers **📊 Analyse**
-    2. Délimitez votre parcelle sur la carte interactive
-    3. Sélectionnez la date d'analyse
-    4. Lancez l'extraction des données satellites et météo
-    5. Obtenez la prédiction et les recommandations
+    1. Ouvrez **📊 Analyse** et choisissez une oasis dans la barre latérale
+    2. Dessinez votre parcelle sur la carte (vue satellite)
+    3. Choisissez la date d'analyse et la culture
+    4. Lancez l'extraction puis la prédiction
 
     ### ⚠️ Prérequis
-    - Compte Google Earth Engine activé (`earthengine authenticate`)
-    - Modèle entraîné disponible (`python train_model.py`)
+    - Accès Google Earth Engine (compte de service ou `earthengine authenticate`, voir README)
+    - Modèle entraîné dans `models/` (`python train_model.py <dataset.csv>`)
     """)
+
+    predictor = get_predictor()
+    if predictor is not None and (predictor.metadata or {}).get("data_source") == "synthetic":
+        st.warning(
+            "Le modèle fourni est entraîné sur des données **synthétiques** calées sur le climat "
+            "d'Errachidia. Ses prédictions sont illustratives tant qu'il n'est pas réentraîné "
+            "sur des données réelles (`build_dataset.py` ou relevés terrain)."
+        )
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.info("📡 3 sources de données satellites")
+        st.info(f"🌴 {len(OASES)} oasis pré-configurées")
     with c2:
         st.warning("🤖 Random Forest + Calibration")
     with c3:
@@ -469,11 +512,23 @@ def page_analysis():
         st.info("Exécutez : `python train_model.py` avec votre dataset d'entraînement.")
         return
 
+    # Choix de la zone dans la barre latérale
+    with st.sidebar:
+        st.divider()
+        zone = st.selectbox("🌴 Centrer la carte sur", ["Vue d'ensemble"] + list(OASES.keys()))
+        crop = st.selectbox("🌱 Culture de la parcelle", CROPS)
+    center, zoom = (MAP_CENTER, MAP_ZOOM) if zone == "Vue d'ensemble" else (OASES[zone], 14)
+
     # Carte interactive
-    _, coordinates = create_map()
+    _, coordinates = create_map(center, zoom)
 
     if coordinates:
-        st.success(f"✅ Parcelle définie : {len(coordinates)} points")
+        try:
+            validate_geometry(coordinates)
+        except ValueError as e:
+            st.error(f"❌ {e}")
+            return
+        st.success(f"✅ Parcelle définie : {len(coordinates) - 1} sommets")
         # Affiche un aperçu des coordonnées
         with st.expander("Voir les coordonnées"):
             st.json(coordinates[:5] + [["..."]])  # Aperçu tronqué
@@ -486,12 +541,15 @@ def page_analysis():
     with col1:
         analysis_date = st.date_input(
             "Date d'analyse",
-            value=datetime.now() - timedelta(days=5),  # Décalage pour éviter données non disponibles
+            value=datetime.now() - timedelta(days=10),  # ERA5-Land et CHIRPS sont publiés avec ~1 semaine de délai
             min_value=datetime(2017, 1, 1),
             max_value=datetime.now(),
         )
     with col2:
-        lookback = st.slider("Fenêtre temporelle (jours)", 7, 60, 30)
+        lookback = st.slider(
+            "Fenêtre du composite Sentinel-2 (jours)", 10, 60, 30,
+            help="Les features météo du modèle portent toujours sur les 30 derniers jours.",
+        )
 
     # Bouton d'extraction
     if st.button("🔍 Extraire les données satellites et météo", type="primary"):
@@ -523,6 +581,10 @@ def page_analysis():
             progress.progress(100, text="Extraction terminée !")
             st.success("✅ Données extraites avec succès")
 
+        except (DataUnavailableError, ValueError) as e:
+            st.session_state.last_error = str(e)
+            st.warning(f"⚠️ {e}")
+            return
         except Exception as e:
             st.session_state.last_error = str(e)
             st.error(f"Erreur lors de l'extraction : {e}")
@@ -538,6 +600,12 @@ def page_analysis():
 
         with tab1:
             if "sentinel_stats" in data:
+                meta = data.get("sentinel_meta", {})
+                if meta:
+                    st.caption(
+                        f"Composite médian de {meta['image_count']} image(s) sur {meta['window_days']} jours — "
+                        f"{meta['valid_pixel_fraction']:.0%} de pixels valides (hors nuages)."
+                    )
                 display_spectral_cards(data["sentinel_stats"])
 
         with tab2:
@@ -566,7 +634,7 @@ def page_analysis():
             if st.session_state.prediction_result is not None:
                 pred = st.session_state.prediction_result
                 display_prediction(pred)
-                display_recommendations(pred, predictor)
+                display_recommendations(pred, predictor, crop)
 
                 # Interprétation des indices
                 with st.expander("🔬 Interprétation détaillée des indices"):
@@ -586,57 +654,67 @@ def page_quick_predict():
         st.error("Modèle non disponible.")
         return
 
-    # Sliders organisés en colonnes
+    c_date, c_crop = st.columns(2)
+    with c_date:
+        ref_date = st.date_input("Date de référence", value=datetime.now())
+    with c_crop:
+        crop = st.selectbox("Culture", CROPS)
+    month = ref_date.month - 1
+    st.caption(
+        f"Valeurs par défaut : normales approximatives d'Errachidia pour ce mois "
+        f"({MONTHLY_TEMP_MEAN_C[month]:.0f} °C, {MONTHLY_PRECIP_MM[month]:.0f} mm, {MONTHLY_RH_MEAN[month]} % HR)."
+    )
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.subheader("🌿 Végétation")
-        ndvi = st.slider("NDVI (moyenne)", -0.2, 1.0, 0.65, 0.01)
-        ndwi = st.slider("NDWI (moyenne)", -0.5, 1.0, 0.50, 0.01)
-        savi = st.slider("SAVI (moyenne)", -0.2, 1.0, 0.58, 0.01)
-        evi = st.slider("EVI (moyenne)", -0.2, 1.0, 0.48, 0.01)
+        ndvi = st.slider("NDVI (moyenne)", -0.1, 0.9, 0.45, 0.01)
+        ndwi = st.slider("NDWI (moyenne)", -0.4, 0.6, 0.15, 0.01)
+        savi = st.slider("SAVI (moyenne)", -0.1, 0.9, 0.32, 0.01)
+        evi = st.slider("EVI (moyenne)", -0.1, 0.9, 0.28, 0.01)
 
     with col2:
         st.subheader("💧 Eau & Stress")
-        msi = st.slider("MSI (moyenne)", 0.0, 3.0, 0.85, 0.01)
-        precip_30j = st.slider("Précipitations 30j (mm)", 0.0, 300.0, 45.0, 1.0)
-        precip_7j = st.slider("Précipitations 7j (mm)", 0.0, 150.0, 12.0, 1.0)
-        dry_days = st.slider("Jours secs consécutifs max", 0, 30, 5, 1)
+        msi = st.slider("MSI (moyenne)", 0.2, 2.5, 0.75, 0.01)
+        precip_30j = st.slider("Précipitations 30j (mm)", 0.0, 150.0, float(MONTHLY_PRECIP_MM[month]), 1.0)
+        precip_7j = st.slider("Précipitations 7j (mm)", 0.0, 80.0, float(round(MONTHLY_PRECIP_MM[month] / 4)), 1.0)
+        dry_days = st.slider("Jours secs consécutifs max", 0, 30, 20, 1)
+        rainy_days = st.slider("Jours de pluie (30j)", 0, 15, 2, 1)
 
     with col3:
         st.subheader("🌡️ Climat")
-        temp_mean = st.slider("Température moy. (°C)", 0.0, 50.0, 28.0, 0.5)
-        temp_max = st.slider("Température max. (°C)", 0.0, 55.0, 35.0, 0.5)
-        humidity = st.slider("Humidité moy. (%)", 0.0, 100.0, 60.0, 1.0)
+        temp_mean = st.slider("Température moy. (°C)", -5.0, 45.0, float(MONTHLY_TEMP_MEAN_C[month]), 0.5)
+        temp_max = st.slider("Température max. (°C)", 0.0, 52.0, float(MONTHLY_TEMP_MEAN_C[month] + 11), 0.5)
+        temp_min = st.slider("Température min. (°C)", -10.0, 35.0, float(MONTHLY_TEMP_MEAN_C[month] - 10), 0.5)
+        humidity = st.slider("Humidité moy. (%)", 0.0, 100.0, float(MONTHLY_RH_MEAN[month]), 1.0)
 
-        # Date pour le cyclique
-        today = datetime.now()
-        sin_doy, cos_doy = np.sin(2 * np.pi * today.timetuple().tm_yday / 366), np.cos(2 * np.pi * today.timetuple().tm_yday / 366)
+    sin_doy, cos_doy = day_of_year_cyclic(datetime.combine(ref_date, datetime.min.time()))
 
-    # Valeurs dérivées (coherent min/max/std)
+    # Valeurs dérivées (min/max/std cohérents)
     data = {
         "NDVI_mean": ndvi,
-        "NDVI_min": max(ndvi - 0.1, -0.2),
-        "NDVI_max": min(ndvi + 0.1, 1.0),
-        "NDVI_std": 0.05,
+        "NDVI_min": max(ndvi - 0.15, -0.1),
+        "NDVI_max": min(ndvi + 0.15, 0.95),
+        "NDVI_std": 0.08,
         "NDWI_mean": ndwi,
-        "NDWI_std": 0.04,
+        "NDWI_std": 0.06,
         "MSI_mean": msi,
-        "MSI_min": max(msi - 0.1, 0.0),
-        "MSI_max": min(msi + 0.1, 3.0),
-        "MSI_std": 0.08,
+        "MSI_min": max(msi - 0.25, 0.1),
+        "MSI_max": msi + 0.25,
+        "MSI_std": 0.12,
         "SAVI_mean": savi,
         "EVI_mean": evi,
         "precipitation_total_30j": precip_30j,
-        "precipitation_total_7j": precip_7j,
+        "precipitation_total_7j": min(precip_7j, precip_30j),
         "precipitation_mean": precip_30j / 30.0,
         "max_consecutive_dry_days": float(dry_days),
-        "rainy_days_count": 10.0,
+        "rainy_days_count": float(rainy_days),
         "temperature_mean": temp_mean,
         "temperature_max": temp_max,
-        "temperature_min": temp_mean - 5.0,
+        "temperature_min": temp_min,
         "humidity_mean": humidity,
-        "humidity_min": max(humidity - 10.0, 0.0),
+        "humidity_min": max(humidity - 18.0, 3.0),
         "day_of_year_sin": sin_doy,
         "day_of_year_cos": cos_doy,
     }
@@ -644,7 +722,7 @@ def page_quick_predict():
     if st.button("🎯 Prédire", type="primary"):
         prediction = predictor.predict(data)
         display_prediction(prediction)
-        display_recommendations(prediction, predictor)
+        display_recommendations(prediction, predictor, crop)
 
 
 def page_dashboard():
@@ -671,6 +749,38 @@ def page_dashboard():
         best = meta.get("best_params", {})
         n_est = best.get("rf__n_estimators", "N/A") if isinstance(best, dict) else "N/A"
         st.metric("Arbres RF", n_est)
+
+    source = meta.get("data_source", "inconnue")
+    if source == "synthetic":
+        st.warning(
+            "Données d'entraînement **synthétiques** (calées sur le climat d'Errachidia). "
+            "Les métriques ci-dessous mesurent la cohérence du pipeline, pas la justesse sur le terrain."
+        )
+    else:
+        st.caption(f"Source des données d'entraînement : {source}")
+
+    metrics = meta.get("test_metrics")
+    if metrics:
+        st.subheader(f"🧪 Performance sur le jeu de test ({metrics['samples']} échantillons)")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Accuracy", f"{metrics['accuracy']:.1%}")
+        m2.metric("F1 pondéré", f"{metrics['f1_weighted']:.1%}")
+        m3.metric("Rappel pondéré", f"{metrics['recall_weighted']:.1%}")
+        auc = metrics.get("roc_auc_ovr_weighted")
+        m4.metric("ROC-AUC", f"{auc:.3f}" if auc is not None else "N/A")
+
+        labels = ["Normal", "Modéré", "Sévère"]
+        fig = px.imshow(
+            metrics["confusion_matrix"], x=labels, y=labels, text_auto=True,
+            color_continuous_scale="Blues",
+            labels={"x": "Classe prédite", "y": "Classe réelle", "color": "Nombre"},
+            title="Matrice de confusion",
+        )
+        fig.update_layout(height=380)
+        st.plotly_chart(fig, width="stretch")
+
+        per_class = pd.DataFrame(metrics["per_class"]).T.map(lambda v: f"{v:.1%}")
+        st.dataframe(per_class, width="stretch")
 
     # Paramètres optimaux
     if meta.get("best_params"):
@@ -718,7 +828,7 @@ def main():
         )
 
         st.divider()
-        st.caption("HydroStress Prototype v1.0")
+        st.caption("HydroStress Prototype v1.1 — Errachidia")
         st.caption("Données : Sentinel-2 | CHIRPS | ERA5-Land")
         st.caption("Modèle : Random Forest + Calibration")
 

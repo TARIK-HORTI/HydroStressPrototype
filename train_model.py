@@ -19,7 +19,10 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.model_selection import (
+    train_test_split, GridSearchCV, StratifiedKFold, StratifiedGroupKFold, GroupShuffleSplit,
+)
+import sklearn
 from sklearn.pipeline import Pipeline
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
@@ -27,6 +30,7 @@ from sklearn.metrics import (
     precision_score, recall_score, f1_score, roc_auc_score,
     ConfusionMatrixDisplay
 )
+import argparse
 import joblib
 import json
 import logging
@@ -110,6 +114,8 @@ class HydroStressModel:
             "random_state": random_state,
             "feature_columns": FEATURE_COLUMNS,
             "label_column": LABEL_COLUMN,
+            "sklearn_version": sklearn.__version__,
+            "region": "Errachidia",
         }
 
         logger.info("✓ Modèle HydroStress initialisé (pipeline scaler + RF + calibration)")
@@ -153,7 +159,7 @@ class HydroStressModel:
 
         Vérifie :
         - Présence des colonnes requises
-        - Absence de valeurs manquantes (remplies par 0 avec warning)
+        - Absence de valeurs manquantes (erreur : à nettoyer en amont)
         - Validité des labels (0, 1, 2)
 
         Args:
@@ -181,8 +187,10 @@ class HydroStressModel:
         # Gestion des valeurs manquantes
         na_count = X.isna().sum().sum()
         if na_count > 0:
-            logger.warning(f"{na_count} valeurs manquantes détectées, remplacées par 0.")
-            X = X.fillna(0.0)
+            bad = X.columns[X.isna().any()].tolist()
+            raise ValueError(
+                f"{na_count} valeurs manquantes dans {bad}. Nettoyez le dataset avant l'entraînement."
+            )
 
         # Vérification des ranges (warnings uniquement)
         for col in ["NDVI_mean", "NDWI_mean", "SAVI_mean", "EVI_mean"]:
@@ -201,7 +209,8 @@ class HydroStressModel:
         X_val: pd.DataFrame = None,
         y_val: pd.Series = None,
         use_grid_search: bool = True,
-        cv_folds: int = 5
+        cv_folds: int = 5,
+        groups_train: pd.Series = None,
     ) -> Dict[str, Any]:
         """
         Entraîne le modèle avec GridSearchCV et calibration.
@@ -209,7 +218,10 @@ class HydroStressModel:
         Workflow :
         1. GridSearchCV sur le train set (validation croisée interne)
         2. Réentraînement du meilleur modèle sur train + val
-        3. Calibration des probabilités (sigmoïde / isotonique)
+        3. Calibration des probabilités (sigmoïde, CV interne sur train + val)
+
+        Si groups_train est fourni (ex. identifiant de parcelle), la validation
+        croisée garde chaque groupe dans un seul fold pour éviter les fuites.
 
         Args:
             X_train: Features d'entraînement
@@ -217,6 +229,10 @@ class HydroStressModel:
             X_val: Features de validation (optionnel, utilisé pour le réentraînement final)
             y_val: Labels de validation (optionnel)
             use_grid_search: Active l'optimisation des hyperparamètres
+        data_source: Origine des données ("synthetic", "vhi", "terrain"...),
+            affichée dans le dashboard
+        group_column: Colonne identifiant la parcelle ; si présente, une même
+            parcelle n'apparaît jamais à la fois en train et en test
             cv_folds: Nombre de folds pour la validation croisée
 
         Returns:
@@ -233,7 +249,10 @@ class HydroStressModel:
             logger.info("GridSearchCV en cours...")
             base_pipe = self._build_pipeline()
 
-            cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
+            if groups_train is not None:
+                cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
+            else:
+                cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=self.random_state)
             grid = GridSearchCV(
                 estimator=base_pipe,
                 param_grid=PARAM_GRID,
@@ -243,7 +262,7 @@ class HydroStressModel:
                 verbose=1,
                 return_train_score=True,
             )
-            grid.fit(X_train, y_train)
+            grid.fit(X_train, y_train, groups=groups_train)
 
             self.best_params = grid.best_params_
             self.cv_results = pd.DataFrame(grid.cv_results_)
@@ -276,25 +295,27 @@ class HydroStressModel:
             y_combined = y_train
             logger.info(f"Réentraînement sur train : {len(X_combined)} échantillons")
 
-        best_pipe = self._build_pipeline(rf_kwargs)
-        best_pipe.fit(X_combined, y_combined)
-
         # -------------------------------------------------------------------
         # 3. Calibration des probabilités
         # -------------------------------------------------------------------
-        logger.info("Calibration des probabilités (sigmoïde)...")
+        # CalibratedClassifierCV entraîne 5 copies du pipeline (meilleurs
+        # hyperparamètres) sur 4/5 des données et calibre chacune sur le 1/5
+        # restant : les probabilités ne sont jamais calibrées sur les données
+        # ayant servi à ajuster les arbres.
+        logger.info("Calibration des probabilités (sigmoïde, cv=5)...")
         calibrated = CalibratedClassifierCV(
-            estimator=best_pipe,
-            method="sigmoid",  # Platt scaling
-            cv=5,       # Le modèle est déjà entraîné
+            estimator=self._build_pipeline(rf_kwargs),
+            method="sigmoid",
+            cv=5,
         )
-        calibrated.fit(X_train, y_train)
+        calibrated.fit(X_combined, y_combined)
 
         self.pipeline = calibrated
         self.is_trained = True
 
         # Métadonnées
         self.metadata["best_params"] = self.best_params
+        self.metadata["cv_f1_weighted"] = float(grid.best_score_) if use_grid_search else None
         self.metadata["training_samples"] = len(X_combined)
         self.metadata["feature_count"] = len(FEATURE_COLUMNS)
 
@@ -360,8 +381,22 @@ class HydroStressModel:
         logger.info(f"  Precision : {prec:.4f}")
         logger.info(f"  Recall    : {rec:.4f}")
         logger.info(f"  F1-Score  : {f1:.4f}")
-        if roc_auc:
+        if roc_auc is not None:
             logger.info(f"  ROC-AUC   : {roc_auc:.4f}")
+
+        self.metadata["test_metrics"] = {
+            "samples": int(len(y_test)),
+            "accuracy": float(acc),
+            "precision_weighted": float(prec),
+            "recall_weighted": float(rec),
+            "f1_weighted": float(f1),
+            "roc_auc_ovr_weighted": float(roc_auc) if roc_auc is not None else None,
+            "confusion_matrix": cm_abs.tolist(),
+            "per_class": {
+                name: {k: float(report[name][k]) for k in ["precision", "recall", "f1-score"]}
+                for name in ["Normal", "Modéré", "Sévère"]
+            },
+        }
 
         return {
             "accuracy": acc,
@@ -386,10 +421,11 @@ class HydroStressModel:
         if not self.is_trained:
             raise RuntimeError("Le modèle n'est pas entraîné.")
 
-        # Accès au Random Forest dans le pipeline calibré
-        # Structure : CalibratedClassifierCV -> Pipeline -> RandomForest
-        rf = self.pipeline.calibrated_classifiers_[0].estimator.named_steps["rf"]
-        importances = rf.feature_importances_
+        # Moyenne sur les 5 Random Forests du modèle calibré
+        importances = np.mean([
+            cc.estimator.named_steps["rf"].feature_importances_
+            for cc in self.pipeline.calibrated_classifiers_
+        ], axis=0)
 
         df = pd.DataFrame({
             "feature": FEATURE_COLUMNS,
@@ -455,6 +491,8 @@ def train_production_model(
     test_size: float = 0.15,
     val_size: float = 0.15,
     use_grid_search: bool = True,
+    data_source: str = "unknown",
+    group_column: str = "parcel_id",
 ) -> Tuple[HydroStressModel, Dict[str, Any]]:
     """
     Pipeline complet d'entraînement d'un modèle de production.
@@ -465,6 +503,10 @@ def train_production_model(
         test_size: Proportion du test set (0.0 - 1.0)
         val_size: Proportion du validation set (0.0 - 1.0)
         use_grid_search: Active l'optimisation des hyperparamètres
+        data_source: Origine des données ("synthetic", "vhi", "terrain"...),
+            affichée dans le dashboard
+        group_column: Colonne identifiant la parcelle ; si présente, une même
+            parcelle n'apparaît jamais à la fois en train et en test
 
     Returns:
         Tuple[HydroStressModel, Dict]: Modèle entraîné et résultats
@@ -480,21 +522,27 @@ def train_production_model(
     except Exception as e:
         raise RuntimeError(f"Impossible de charger le dataset : {e}")
 
-    # Split stratifié en 3 parties
-    # Étape 1 : séparation train vs (val+test)
-    val_test_ratio = (val_size + test_size) / (1.0)
-    X_full = df
     y_full = df[LABEL_COLUMN]
+    groups = df[group_column] if group_column in df.columns else None
 
-    X_train_full, X_val_test, y_train_full, y_val_test = train_test_split(
-        X_full, y_full, test_size=val_test_ratio, random_state=42, stratify=y_full
-    )
-
-    # Étape 2 : séparation val vs test
-    val_ratio = val_size / (val_size + test_size)
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_val_test, y_val_test, test_size=(1 - val_ratio), random_state=42, stratify=y_val_test
-    )
+    if groups is not None:
+        # Split par parcelle : évite qu'une parcelle soit vue en train et en test
+        logger.info(f"Split groupé par '{group_column}' ({groups.nunique()} parcelles)")
+        outer = GroupShuffleSplit(n_splits=1, test_size=val_size + test_size, random_state=42)
+        train_idx, rest_idx = next(outer.split(df, y_full, groups))
+        rest = df.iloc[rest_idx]
+        inner = GroupShuffleSplit(n_splits=1, test_size=test_size / (val_size + test_size), random_state=42)
+        val_idx, test_idx = next(inner.split(rest, rest[LABEL_COLUMN], rest[group_column]))
+        X_train_full, X_val, X_test = df.iloc[train_idx], rest.iloc[val_idx], rest.iloc[test_idx]
+        y_train_full, y_val, y_test = (part[LABEL_COLUMN] for part in (X_train_full, X_val, X_test))
+    else:
+        X_train_full, X_val_test, y_train_full, y_val_test = train_test_split(
+            df, y_full, test_size=val_size + test_size, random_state=42, stratify=y_full
+        )
+        X_val, X_test, y_val, y_test = train_test_split(
+            X_val_test, y_val_test, test_size=test_size / (val_size + test_size),
+            random_state=42, stratify=y_val_test,
+        )
 
     logger.info(f"Split : train={len(X_train_full)}, val={len(X_val)}, test={len(X_test)}")
 
@@ -505,6 +553,9 @@ def train_production_model(
 
     # Préparation des features
     model = HydroStressModel(random_state=42)
+    model.metadata["data_source"] = data_source
+    model.metadata["data_file"] = str(data_file)
+    groups_train = X_train_full[group_column].reset_index(drop=True) if groups is not None else None
     X_train, y_train = model.prepare_data(X_train_full)
     X_val, y_val = model.prepare_data(X_val)
     X_test, y_test = model.prepare_data(X_test)
@@ -514,6 +565,7 @@ def train_production_model(
         X_train, y_train,
         X_val=X_val, y_val=y_val,
         use_grid_search=use_grid_search,
+        groups_train=groups_train,
     )
 
     # Évaluation
@@ -543,6 +595,19 @@ def train_production_model(
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(description="Entraîne le modèle HydroStress.")
+    parser.add_argument("data_file", help="CSV d'entraînement (24 features + stress_class)")
+    parser.add_argument("--output", default="models/hydrostress")
+    parser.add_argument("--source", default="unknown",
+                        help="Origine des données : synthetic, vhi, terrain...")
+    parser.add_argument("--no-grid-search", action="store_true")
+    args = parser.parse_args()
+    train_production_model(
+        args.data_file, output_path=args.output,
+        use_grid_search=not args.no_grid_search, data_source=args.source,
+    )
+
+
 if __name__ == "__main__":
-    print("Module d'entraînement HydroStress.")
-    print("Utilisation : model, results = train_production_model('data.csv')")
+    main()
