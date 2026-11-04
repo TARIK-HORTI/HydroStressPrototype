@@ -75,15 +75,35 @@ class DataUnavailableError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Authentification Earth Engine
 # ---------------------------------------------------------------------------
+def parse_service_account_secrets(secrets) -> Optional[dict]:
+    """
+    Extrait le compte de service des secrets Streamlit. Deux formats acceptés :
+
+    - GCP_SERVICE_ACCOUNT_JSON = '''{ ...contenu du fichier JSON collé tel quel... }'''
+    - [GCP_SERVICE_ACCOUNT] : table TOML avec les champs du JSON
+    """
+    if "GCP_SERVICE_ACCOUNT_JSON" in secrets:
+        raw = secrets["GCP_SERVICE_ACCOUNT_JSON"]
+        info = json.loads(raw, strict=False) if isinstance(raw, str) else dict(raw)
+        return info
+    if "GCP_SERVICE_ACCOUNT" in secrets:
+        return dict(secrets["GCP_SERVICE_ACCOUNT"])
+    return None
+
+
 def _service_account_from_streamlit() -> Optional[dict]:
     """Lit le compte de service dans st.secrets s'il est configuré."""
     try:
         import streamlit as st
-        if "GCP_SERVICE_ACCOUNT" in st.secrets:
-            return dict(st.secrets["GCP_SERVICE_ACCOUNT"])
+        return parse_service_account_secrets(st.secrets)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Secret GCP_SERVICE_ACCOUNT_JSON invalide : collez le contenu complet du fichier JSON ({e})."
+        ) from e
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _service_account_from_env() -> Optional[dict]:
@@ -99,7 +119,8 @@ def _service_account_from_env() -> Optional[dict]:
 def initialize_earth_engine() -> str:
     """
     Initialise Earth Engine, dans cet ordre :
-    1. Compte de service dans st.secrets["GCP_SERVICE_ACCOUNT"] (Streamlit Cloud)
+    1. Compte de service dans st.secrets (GCP_SERVICE_ACCOUNT_JSON ou
+       [GCP_SERVICE_ACCOUNT], Streamlit Cloud)
     2. Fichier JSON via EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS
     3. Identifiants utilisateur de `earthengine authenticate` (projet via EE_PROJECT)
 

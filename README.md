@@ -57,7 +57,13 @@ pip install -r requirements.txt
 
 L'application essaie, dans cet ordre :
 
-1. **Streamlit Cloud** : compte de service dans `.streamlit/secrets.toml` (ou les secrets de l'app) sous la clé `[GCP_SERVICE_ACCOUNT]` (contenu du JSON du compte de service).
+1. **Streamlit Cloud** : dans *Settings → Secrets* de l'app (ou `.streamlit/secrets.toml` en local), collez le fichier JSON du compte de service tel quel :
+   ```toml
+   GCP_SERVICE_ACCOUNT_JSON = '''
+   { "type": "service_account", "project_id": "...", ... }
+   '''
+   ```
+   L'ancien format (table `[GCP_SERVICE_ACCOUNT]` avec les champs du JSON) reste accepté. Le compte de service doit être enregistré pour Earth Engine et avoir le rôle *Earth Engine Resource Viewer* (ou plus) sur le projet.
 2. **Fichier JSON local** : `export EE_SERVICE_ACCOUNT_FILE=/chemin/compte-service.json` (ou `GOOGLE_APPLICATION_CREDENTIALS`).
 3. **Compte utilisateur** : `earthengine authenticate`, puis `export EE_PROJECT=<id-du-projet-gcp>`.
 
