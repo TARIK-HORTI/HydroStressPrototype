@@ -234,6 +234,11 @@ def get_pipeline() -> DataPipeline:
         return DataPipeline()
     except Exception as e:
         st.error(f"Erreur connexion Earth Engine : {e}")
+        st.info(
+            "Configurez l'accès Earth Engine : sur Streamlit Cloud, ajoutez le secret "
+            "`GCP_SERVICE_ACCOUNT_JSON` (contenu du fichier JSON du compte de service). "
+            "Voir la section « Authentification Earth Engine » du README."
+        )
         return None
 
 

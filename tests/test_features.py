@@ -86,3 +86,20 @@ def test_assemble_features_matches_model_columns():
             "humidity_mean": 25.0, "humidity_min": 8.0}
     feats = assemble_features(stats, chirps, era5, datetime(2024, 7, 15))
     assert sorted(feats) == sorted(FEATURE_COLUMNS)
+
+
+def test_service_account_secret_formats():
+    from extract_data import parse_service_account_secrets
+
+    raw = '{"type": "service_account", "project_id": "p1", "private_key": "-----BEGIN\\nKEY\\n-----END\\n"}'
+    info = parse_service_account_secrets({"GCP_SERVICE_ACCOUNT_JSON": raw})
+    assert info["project_id"] == "p1"
+    assert info["private_key"].count("\n") == 3
+
+    # JSON collé avec de vrais retours à la ligne dans la clé
+    raw_newlines = raw.replace("\\n", "\n")
+    assert parse_service_account_secrets({"GCP_SERVICE_ACCOUNT_JSON": raw_newlines})["project_id"] == "p1"
+
+    table = {"GCP_SERVICE_ACCOUNT": {"type": "service_account", "project_id": "p2"}}
+    assert parse_service_account_secrets(table)["project_id"] == "p2"
+    assert parse_service_account_secrets({}) is None
