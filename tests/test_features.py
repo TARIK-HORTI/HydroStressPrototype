@@ -129,3 +129,14 @@ def test_demo_extraction_is_reproducible_across_processes():
     runs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
             for _ in range(2)}
     assert len(runs) == 1
+
+
+def test_demo_works_without_earthengine():
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['ee'] = None;"  # simule earthengine-api absent
+            "from demo import make_demo_extraction;"
+            "c=[[-4.233,31.433],[-4.231,31.433],[-4.231,31.431],[-4.233,31.433]];"
+            "print(len(make_demo_extraction(c,'2024-08-15')['features']))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr

@@ -13,6 +13,8 @@ des indices spectraux pour l'analyse du stress hydrique au Maroc.
   lève DataUnavailableError.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -20,7 +22,10 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-import ee
+try:
+    import ee
+except ImportError:  # mode démonstration sans Earth Engine (earthengine-api non installé)
+    ee = None
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
@@ -139,6 +144,8 @@ def initialize_earth_engine() -> str:
     Returns:
         str: méthode d'authentification utilisée
     """
+    if ee is None:
+        raise RuntimeError("earthengine-api n'est pas installé : pip install earthengine-api")
     info = _service_account_from_streamlit() or _service_account_from_env()
     if info:
         from google.oauth2 import service_account
