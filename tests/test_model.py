@@ -72,3 +72,25 @@ def test_committed_model_loads_and_recommends():
     rec = predictor.get_recommendations(pred, crop="Palmier dattier")
     assert CROP_TIPS["Palmier dattier"][0] in rec["actions"]
     assert all("%%" not in a for a in rec["actions"])
+
+
+def test_demo_extraction_and_html_report():
+    from demo import make_demo_extraction
+    from report import build_report, report_to_html
+
+    coords = [[-4.236, 31.430], [-4.230, 31.430], [-4.230, 31.435], [-4.236, 31.435], [-4.236, 31.430]]
+    data = make_demo_extraction(coords, "2024-07-15", 30)
+    assert data["demo"] is True
+    assert sorted(data["features"]) == sorted(FEATURE_COLUMNS)
+    assert data["features"]["temperature_max"] == pytest.approx(data["era5_series"]["temperature_max_c"].max())
+
+    predictor = HydroStressPredictor()
+    pred = predictor.predict(data["features"])
+    report = build_report(
+        coordinates=coords, area_km2=0.3, zone="Erfoud (Tafilalet)", crop="Palmier dattier", data=data,
+        prediction=pred, recommendations=predictor.get_recommendations(pred, "Palmier dattier"),
+        interpretation=predictor.interpret_indices(data["features"]), model_meta=predictor.metadata,
+    )
+    assert report["parcel"]["area_ha"] == 30.0
+    html = report_to_html(report)
+    assert "DÉMONSTRATION" in html and "Erfoud" in html and "<script" not in html

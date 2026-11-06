@@ -1,9 +1,9 @@
 # HydroStressPrototype — Python 3.10 à 3.12
-streamlit>=1.32.0
+streamlit>=1.50.0
 earthengine-api>=0.1.400
 google-auth>=2.20.0
 folium>=0.14.0
-streamlit-folium>=0.17.0
+streamlit-folium>=0.22.0
 
 numpy>=1.26.0
 pandas>=2.1.0

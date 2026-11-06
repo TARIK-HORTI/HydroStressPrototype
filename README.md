@@ -28,7 +28,10 @@ HydroStressPrototype/
 ├── generate_training_data.py  # Dataset synthétique calé sur le climat d'Errachidia
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
 ├── predict.py                 # Prédiction, interprétation, recommandations locales
-├── app.py                     # Interface Streamlit
+├── app.py                     # Tableau de bord Streamlit (une seule page)
+├── report.py                  # Rapport d'analyse (export HTML)
+├── demo.py                    # Données de démonstration (sans Earth Engine)
+├── .streamlit/config.toml     # Thème de l'interface
 ├── models/                    # Modèle entraîné + métadonnées (métriques de test incluses)
 ├── tests/                     # Tests pytest (sans accès Earth Engine)
 └── requirements.txt
@@ -81,11 +84,15 @@ Puis ouvrez `http://localhost:8501`.
 
 ### 2. Workflow d'analyse
 
-1. Ouvrir **📊 Analyse**, choisir une oasis dans la barre latérale et la culture de la parcelle
-2. Dessiner la parcelle sur la carte (vue satellite, ≤ 10 km², dans la province)
+Tout se passe sur une seule page :
+
+1. Choisir la zone (oasis) et la culture dans le panneau de droite
+2. Dessiner la parcelle sur la carte satellite (≤ 10 km², dans la province)
 3. Choisir la date d'analyse (ERA5-Land et CHIRPS sont publiés avec environ une semaine de retard)
-4. Extraire les données puis lancer la prédiction
-5. Lire les recommandations adaptées à la culture
+4. Cliquer **Analyser la parcelle** : extraction, prédiction et rapport s'enchaînent
+5. Lire le rapport sous la carte et le télécharger (HTML imprimable en PDF, ou JSON)
+
+Le bouton **Voir un exemple** affiche un rapport avec des données de démonstration (sans Earth Engine), clairement signalées comme telles. Les informations sur le modèle et une simulation manuelle sont en bas de page.
 
 ### 3. Entraîner un modèle
 
