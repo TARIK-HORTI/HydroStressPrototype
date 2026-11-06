@@ -68,6 +68,8 @@ FEATURE_COLUMNS = [
     "humidity_mean", "humidity_min",
     # Temporel cyclique
     "day_of_year_sin", "day_of_year_cos",
+    # Site : situe la parcelle dans son climat (permet un modèle pour tout le Maroc)
+    "elevation_m", "precip_annual_normal_mm",
 ]
 
 LABEL_COLUMN = "stress_class"
@@ -115,7 +117,7 @@ class HydroStressModel:
             "feature_columns": FEATURE_COLUMNS,
             "label_column": LABEL_COLUMN,
             "sklearn_version": sklearn.__version__,
-            "region": "Errachidia",
+            "region": "Maroc",
         }
 
         logger.info("✓ Modèle HydroStress initialisé (pipeline scaler + RF + calibration)")

@@ -2,8 +2,7 @@
 extract_data.py
 ================
 Extraction des données satellitaires (Sentinel-2, CHIRPS, ERA5-Land) et calcul
-des indices spectraux pour l'analyse du stress hydrique dans la province
-d'Errachidia.
+des indices spectraux pour l'analyse du stress hydrique au Maroc.
 
 - Sentinel-2 : composite médian sans nuages sur la fenêtre (réflectances
   converties en [0, 1]), avec contrôle de la part de pixels valides.
@@ -26,7 +25,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
 
-from region import validate_in_region
+from region import ZONES, validate_in_region, zone_for_point
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +39,8 @@ logger = logging.getLogger(__name__)
 SENTINEL2_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 CHIRPS_COLLECTION = "UCSB-CHG/CHIRPS/DAILY"
 ERA5_COLLECTION = "ECMWF/ERA5_LAND/DAILY_AGGR"
+SRTM_IMAGE = "USGS/SRTMGL1_003"
+CLIMATOLOGY_YEARS = (1991, 2020)
 
 # Classes SCL Sentinel-2 conservées : 4 = végétation, 5 = sol nu
 SCL_VALID_CLASSES = [4, 5]
@@ -157,7 +158,7 @@ def validate_geometry(coordinates: List[List[float]], require_region: bool = Tru
     Valide et retourne un polygone Shapely à partir des coordonnées GeoJSON.
 
     Vérifie : au moins 3 sommets, pas d'auto-intersection, surface
-    < MAX_PARCEL_AREA_KM2 et, par défaut, appartenance à la province d'Errachidia.
+    < MAX_PARCEL_AREA_KM2 et, par défaut, appartenance au Maroc.
 
     Args:
         coordinates: Liste de [lon, lat] au format GeoJSON
@@ -485,8 +486,14 @@ def assemble_features(
     chirps_features: Dict[str, float],
     era5_features: Dict[str, float],
     date: datetime,
+    site_features: Dict[str, float],
 ) -> Dict[str, float]:
-    """Construit le vecteur des 24 features attendu par le modèle."""
+    """
+    Construit le vecteur des 26 features attendu par le modèle.
+
+    site_features : caractéristiques fixes du site (elevation_m,
+    precip_annual_normal_mm) qui situent la parcelle dans son climat.
+    """
     sin_doy, cos_doy = day_of_year_cyclic(date)
     s = sentinel_stats
     return {
@@ -506,7 +513,30 @@ def assemble_features(
         **era5_features,
         "day_of_year_sin": sin_doy,
         "day_of_year_cos": cos_doy,
+        "elevation_m": float(site_features["elevation_m"]),
+        "precip_annual_normal_mm": float(site_features["precip_annual_normal_mm"]),
     }
+
+
+def get_site_features(point: ee.Geometry) -> Dict[str, float]:
+    """
+    Altitude (SRTM 30 m) et cumul annuel moyen de pluie CHIRPS 1991-2020 au
+    centroïde de la parcelle, en un seul appel Earth Engine.
+    """
+    y0, y1 = CLIMATOLOGY_YEARS
+    rain_normal = (
+        ee.ImageCollection(CHIRPS_COLLECTION)
+        .filterDate(f"{y0}-01-01", f"{y1 + 1}-01-01")
+        .select("precipitation").sum().divide(y1 - y0 + 1).rename("rain")
+    )
+    elev = ee.Image(SRTM_IMAGE).select("elevation").rename("elev")
+    info = ee.Dictionary({
+        "elev": elev.reduceRegion(ee.Reducer.first(), point, 30).get("elev"),
+        "rain": rain_normal.reduceRegion(ee.Reducer.first(), point, 5000).get("rain"),
+    }).getInfo()
+    if info.get("elev") is None or info.get("rain") is None:
+        raise DataUnavailableError("Altitude ou normale de pluie indisponible pour ce site.")
+    return {"elevation_m": float(info["elev"]), "precip_annual_normal_mm": float(info["rain"])}
 
 
 class DataPipeline:
@@ -588,7 +618,12 @@ class DataPipeline:
         check_completeness(era5_df.tail(WEATHER_WINDOW_DAYS), WEATHER_WINDOW_DAYS, "ERA5-Land")
         era5_features = self.era5.aggregate_features(era5_df)
 
-        features = assemble_features(sentinel_stats, chirps_features, era5_features, end_dt)
+        site = get_site_features(centroid)
+        features = assemble_features(sentinel_stats, chirps_features, era5_features, end_dt, site)
+
+        lons = [c[0] for c in coordinates]
+        lats = [c[1] for c in coordinates]
+        zone_id, place, zone_km = zone_for_point(sum(lats) / len(lats), sum(lons) / len(lons))
 
         logger.info("✓ Extraction complète et assemblée")
         return {
@@ -604,8 +639,10 @@ class DataPipeline:
             "extraction_date": datetime.now().isoformat(),
             "date_analyzed": analysis_date,
             "lookback_days": lookback_days,
+            "zone": {"id": zone_id, "name": ZONES[zone_id]["name"], "nearest_place": place,
+                     "distance_km": round(zone_km, 1)},
         }
 
 
 if __name__ == "__main__":
-    print("Pipeline d'extraction HydroStress (province d'Errachidia).")
+    print("Pipeline d'extraction HydroStress (Maroc).")

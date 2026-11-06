@@ -17,6 +17,8 @@ import pandas as pd
 import joblib
 import json
 import sklearn
+
+from region import ZONES
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
@@ -44,29 +46,40 @@ INDEX_RANGES = {
     "EVI_mean": (-1.0, 1.0),
 }
 
-# Seuils indicatifs pour les parcelles irriguées des oasis d'Errachidia
-# (palmeraies avec cultures sous-jacentes, luzerne, céréales). Le sol nu
-# désertique environnant a un NDVI ~0.08-0.15. À affiner avec des relevés terrain.
+# Seuils indicatifs génériques. Le minimum de NDVI/SAVI/EVI est ajusté par zone
+# (ZONES[...]["ndvi_healthy_min"]) : les oasis sont plus clairsemées que les
+# plaines irriguées. À affiner avec des relevés terrain.
 HEALTHY_RANGES = {
-    "NDVI": {"min": 0.25, "max": 0.75, "description": "Vigueur de la végétation"},
+    "NDVI": {"min": 0.30, "max": 0.80, "description": "Vigueur de la végétation"},
     "NDWI": {"min": 0.0, "max": 0.5, "description": "Contenu en eau végétale"},
     "MSI": {"min": 0.0, "max": 1.0, "description": "Stress hydrique (bas = sain)"},
-    "SAVI": {"min": 0.18, "max": 0.6, "description": "NDVI corrigé du sol"},
-    "EVI": {"min": 0.15, "max": 0.55, "description": "Indice amélioré de végétation"},
+    "SAVI": {"min": 0.20, "max": 0.65, "description": "NDVI corrigé du sol"},
+    "EVI": {"min": 0.17, "max": 0.60, "description": "Indice amélioré de végétation"},
 }
 
 
+def healthy_ranges_for_zone(zone_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """Seuils ajustés à la zone (minimum de vigueur plus bas dans les zones arides)."""
+    ranges = {k: dict(v) for k, v in HEALTHY_RANGES.items()}
+    if zone_id in ZONES:
+        ndvi_min = ZONES[zone_id]["ndvi_healthy_min"]
+        ranges["NDVI"]["min"] = ndvi_min
+        ranges["SAVI"]["min"] = round(ndvi_min * 0.72, 2)
+        ranges["EVI"]["min"] = round(ndvi_min * 0.6, 2)
+    return ranges
+
+
 # ---------------------------------------------------------------------------
-# Recommandations — province d'Errachidia
+# Recommandations
 # ---------------------------------------------------------------------------
 RECOMMENDATIONS_DB = {
     0: {  # Normal
         "level": "info",
         "title": "Stress hydrique normal",
         "actions": [
-            "Maintenir le calendrier d'irrigation actuel (tour d'eau de la séguia, khettara ou forage).",
+            "Maintenir le calendrier d'irrigation actuel.",
             "Continuer le suivi des indices toutes les 1 à 2 semaines (revisite Sentinel-2 : 5 jours).",
-            "En été (juin-août), anticiper : les besoins augmentent fortement avec des maximales > 40 °C.",
+            "Anticiper les périodes chaudes (juin-septembre) : les besoins en eau augmentent fortement.",
         ],
         "priority": "low",
     },
@@ -75,8 +88,8 @@ RECOMMENDATIONS_DB = {
         "title": "Stress hydrique modéré détecté",
         "actions": [
             "Rapprocher les irrigations : +20 à 30 % d'apport, de préférence tôt le matin ou le soir.",
-            "Vérifier le réseau goutte-à-goutte (colmatage des goutteurs, pression) ou l'état des séguias.",
-            "Pailler le sol (palmes sèches, résidus de luzerne) pour limiter l'évaporation.",
+            "Vérifier le réseau d'irrigation (colmatage des goutteurs, pression, fuites, état des canaux).",
+            "Pailler le sol (résidus de culture, paille) pour limiter l'évaporation.",
             "Surveiller la parcelle tous les 2 à 3 jours.",
         ],
         "priority": "medium",
@@ -86,9 +99,8 @@ RECOMMENDATIONS_DB = {
         "title": "Stress hydrique SÉVÈRE",
         "actions": [
             "IRRIGATION PRIORITAIRE : augmenter les apports de +50 % dès que possible.",
-            "Prioriser les cultures pérennes (palmier dattier, olivier) si l'eau est limitée.",
+            "Prioriser les cultures pérennes (arbres fruitiers, olivier, palmier) si l'eau est limitée.",
             "Contrôler le niveau du puits / forage et la salinité de l'eau d'irrigation.",
-            "Contacter l'ORMVA du Tafilalet ou un technicien agricole pour une visite terrain.",
         ],
         "priority": "high",
     },
@@ -103,13 +115,46 @@ CROP_TIPS = {
         "Luzerne : éviter la coupe pendant le pic de stress et irriguer juste après chaque coupe.",
     ],
     "Céréales (blé / orge)": [
-        "Céréales : le stress au tallage et à l'épiaison (février-avril) a l'impact le plus fort sur le rendement.",
+        "Céréales : le stress au tallage et à l'épiaison (février-avril) a l'impact le plus fort sur le rendement ; une irrigation d'appoint à ces stades est la plus rentable.",
     ],
     "Olivier": [
         "Olivier : un apport à la floraison et au grossissement des fruits limite la chute de production.",
     ],
     "Maraîchage": [
         "Maraîchage : passer à des irrigations courtes et fréquentes, ombrage léger aux heures chaudes.",
+    ],
+    "Maraîchage sous serre": [
+        "Serre : aérer aux heures chaudes, fractionner la fertigation et contrôler la conductivité de la solution.",
+    ],
+    "Agrumes": [
+        "Agrumes : un stress à la floraison et à la nouaison (mars-juin) fait chuter les fruits ; maintenir une humidité du sol régulière.",
+    ],
+    "Betterave sucrière": [
+        "Betterave : les besoins sont maximaux en avril-mai ; ne pas espacer les tours d'eau pendant cette phase.",
+    ],
+    "Canne à sucre": [
+        "Canne à sucre : maintenir des apports réguliers en été, période de forte croissance.",
+    ],
+    "Riz": [
+        "Riz : maintenir la lame d'eau ; un assec pendant la floraison réduit fortement le rendement.",
+    ],
+    "Vigne": [
+        "Vigne : un stress modéré après la véraison est tolérable, mais pas pendant la floraison et la nouaison.",
+    ],
+    "Arboriculture (pommier, prunier)": [
+        "Arbres fruitiers : sécuriser l'irrigation pendant le grossissement des fruits (mai-août).",
+    ],
+    "Arganier": [
+        "Arganier : très résistant à la sécheresse ; un apport d'appoint ne se justifie que pour les jeunes plants.",
+    ],
+    "Bananier": [
+        "Bananier (sous serre) : besoins très élevés, irrigation quotidienne et contrôle de l'humidité de l'air.",
+    ],
+    "Légumineuses": [
+        "Légumineuses : sensibles au stress à la floraison ; une irrigation d'appoint sécurise la gousse.",
+    ],
+    "Rosier à parfum": [
+        "Rosier à parfum : sécuriser l'irrigation en mars-avril, avant et pendant la floraison.",
     ],
 }
 
@@ -319,13 +364,15 @@ class HydroStressPredictor:
         logger.info(f"✓ Batch de {len(data_list)} prédictions terminé")
         return pd.DataFrame(results)
 
-    def get_recommendations(self, prediction: Dict[str, Any], crop: Optional[str] = None) -> Dict[str, Any]:
+    def get_recommendations(self, prediction: Dict[str, Any], crop: Optional[str] = None,
+                            zone_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Génère des recommandations structurées basées sur la prédiction.
 
         Args:
             prediction: Résultat de predict()
             crop: Culture de la parcelle (voir region.CROPS), optionnelle
+            zone_id: Zone agricole (region.ZONES), pour l'organisme à contacter
 
         Returns:
             Dict: Recommandations structurées (niveau, titre, actions, priorité)
@@ -335,11 +382,14 @@ class HydroStressPredictor:
         rec["actions"] = list(rec["actions"])
         if crop and class_idx > 0:
             rec["actions"] += CROP_TIPS.get(crop, [])
+        if class_idx == 2:
+            contact = ZONES[zone_id]["contact"] if zone_id in ZONES else "l'ORMVA ou la DPA de votre zone"
+            rec["actions"].append(f"Contacter {contact} ou un technicien agricole pour une visite terrain.")
         rec["prediction_id"] = prediction.get("prediction_id")
         rec["confidence"] = prediction.get("confidence_percent")
         return rec
 
-    def interpret_indices(self, data: Dict[str, float]) -> Dict[str, Dict[str, Any]]:
+    def interpret_indices(self, data: Dict[str, float], zone_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """
         Interprète chaque indice spectral par rapport aux seuils physiologiques.
 
@@ -351,7 +401,7 @@ class HydroStressPredictor:
         """
         interpretation = {}
 
-        for idx_name, meta in HEALTHY_RANGES.items():
+        for idx_name, meta in healthy_ranges_for_zone(zone_id).items():
             mean_key = f"{idx_name}_mean"
             val = data.get(mean_key)
 

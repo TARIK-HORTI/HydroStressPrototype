@@ -45,3 +45,6 @@ predictions_log.jsonl
 # Datasets réels générés par build_dataset.py
 data/
 .pytest_cache/
+
+# Secrets Streamlit locaux
+.streamlit/secrets.toml
