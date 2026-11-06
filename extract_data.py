@@ -108,7 +108,17 @@ def _service_account_from_streamlit() -> Optional[dict]:
 
 
 def _service_account_from_env() -> Optional[dict]:
-    """Lit un fichier JSON de compte de service désigné par variable d'environnement."""
+    """
+    Compte de service via l'environnement (serveur, Docker, Cloud Run) :
+    EE_SERVICE_ACCOUNT_JSON (contenu JSON brut, p. ex. injecté depuis Secret Manager),
+    sinon un fichier désigné par EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS.
+    """
+    raw = os.environ.get("EE_SERVICE_ACCOUNT_JSON", "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"EE_SERVICE_ACCOUNT_JSON invalide : JSON attendu ({e}).") from e
     for var in ("EE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
         path = os.environ.get(var)
         if path and os.path.exists(path):
@@ -122,7 +132,8 @@ def initialize_earth_engine() -> str:
     Initialise Earth Engine, dans cet ordre :
     1. Compte de service dans st.secrets (GCP_SERVICE_ACCOUNT_JSON ou
        [GCP_SERVICE_ACCOUNT], Streamlit Cloud)
-    2. Fichier JSON via EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS
+    2. Variable EE_SERVICE_ACCOUNT_JSON (JSON brut) ou fichier via
+       EE_SERVICE_ACCOUNT_FILE / GOOGLE_APPLICATION_CREDENTIALS
     3. Identifiants utilisateur de `earthengine authenticate` (projet via EE_PROJECT)
 
     Returns:

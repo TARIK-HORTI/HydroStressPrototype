@@ -12,6 +12,7 @@ HydroStress Maroc — tableau de bord sur une seule page.
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 
 import folium
@@ -38,7 +39,7 @@ from report import CLASS_STYLES, STATUS_LABELS, build_report, report_to_html
 from stations import validate_analysis
 
 st.set_page_config(
-    page_title="HydroStress Maroc",
+    page_title="HydroStress Maroc" + (" (bêta)" if os.environ.get("HYDROSTRESS_STAGE", "beta").lower() != "production" else ""),
     page_icon="💧",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -48,6 +49,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ACCENT = "#2DD4BF"
+
+
+def app_setting(name: str, default: str = "") -> str:
+    """Réglage lu dans l'environnement, puis dans st.secrets (Streamlit Cloud)."""
+    value = os.environ.get(name)
+    if value is None:
+        try:
+            value = st.secrets.get(name)
+        except Exception:
+            value = None
+    return str(value).strip() if value not in (None, "") else default
+
+
+# "beta" (défaut) affiche les mentions « version bêta / démonstration » ;
+# "production" les retire, le jour du lancement officiel.
+STAGE = app_setting("HYDROSTRESS_STAGE", "beta").lower()
+IS_BETA = STAGE != "production"
+BRAND = app_setting("HYDROSTRESS_BRAND", "")
 
 # ---------------------------------------------------------------------------
 # Style
@@ -92,6 +111,10 @@ st.markdown(
   color:#CBD5E1; font-size:.9rem; margin:6px 0 12px;}}
 .hs-banner {{border-radius:12px; padding:10px 14px; font-size:.9rem; margin-bottom:12px;
   background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.4); color:#FCD34D;}}
+.hs-hero h1 span.hs-beta {{display:inline-block; margin-left:10px; padding:3px 10px; border-radius:999px; font-size:.75rem;
+  font-weight:700; letter-spacing:.08em; vertical-align:middle; color:#0B1220 !important; background:#FACC15;}}
+.hs-betabar {{background:rgba(250,204,21,.10); border:1px solid rgba(250,204,21,.45); color:#FDE68A;
+  border-radius:12px; padding:10px 16px; margin-bottom:14px; font-size:.9rem;}}
 .hs-foot {{color:#64748B; font-size:.8rem; text-align:center; margin-top:28px;}}
 
 div.stButton > button, div.stDownloadButton > button {{border-radius:10px; font-weight:600;}}
@@ -141,10 +164,19 @@ def hero(predictor):
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
         chips_html += "<span class='hs-chip warn'>Modèle de démonstration (données synthétiques)</span>"
+    beta_badge = "<span class='hs-beta'>BÊTA</span>" if IS_BETA else ""
+    by = f"{BRAND} · " if BRAND else ""
+    beta_bar = (
+        f"<div class='hs-betabar'>🧪 <b>{by}Version bêta — démonstration.</b> Cette plateforme est une "
+        "version de test en cours de développement : les résultats sont indicatifs et ne remplacent pas "
+        "l'avis d'un conseiller agricole. Le service officiel sera ouvert prochainement.</div>"
+        if IS_BETA else ""
+    )
     st.markdown(
         f"""
+{beta_bar}
 <div class="hs-hero">
-  <h1>💧 HydroStress <span>Maroc</span></h1>
+  <h1>💧 HydroStress <span>Maroc</span>{beta_badge}</h1>
   <p>Suivi du stress hydrique des parcelles agricoles partout au Maroc (Gharb, Saïs, Tadla, Haouz,
   Chaouia-Doukkala, Souss-Massa, Oriental, oasis du Tafilalet et du Drâa), par télédétection et
   apprentissage automatique. Choisissez une zone, dessinez votre parcelle et obtenez un diagnostic
@@ -621,9 +653,11 @@ def main():
     with st.expander("🎛️ Simulation manuelle (sans satellite)"):
         render_simulation(predictor)
 
+    owner = f"{BRAND} · " if BRAND else ""
+    stage = "Version bêta (démonstration) · " if IS_BETA else ""
     st.markdown(
-        "<div class='hs-foot'>HydroStress Maroc · Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
-        "ERA5-Land (ECMWF) via Google Earth Engine · Prototype de recherche, résultats indicatifs</div>",
+        f"<div class='hs-foot'>HydroStress Maroc · {owner}{stage}Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
+        "ERA5-Land (ECMWF) via Google Earth Engine · Résultats indicatifs</div>",
         unsafe_allow_html=True,
     )
 

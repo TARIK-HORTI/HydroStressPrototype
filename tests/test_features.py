@@ -104,3 +104,17 @@ def test_service_account_secret_formats():
     table = {"GCP_SERVICE_ACCOUNT": {"type": "service_account", "project_id": "p2"}}
     assert parse_service_account_secrets(table)["project_id"] == "p2"
     assert parse_service_account_secrets({}) is None
+
+
+def test_service_account_from_env_json(monkeypatch):
+    import pytest
+    from extract_data import _service_account_from_env
+    monkeypatch.delenv("EE_SERVICE_ACCOUNT_FILE", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("EE_SERVICE_ACCOUNT_JSON", '{"client_email": "a@b.iam", "project_id": "p3"}')
+    assert _service_account_from_env()["project_id"] == "p3"
+    monkeypatch.setenv("EE_SERVICE_ACCOUNT_JSON", "pas du json")
+    with pytest.raises(ValueError):
+        _service_account_from_env()
+    monkeypatch.delenv("EE_SERVICE_ACCOUNT_JSON")
+    assert _service_account_from_env() is None
