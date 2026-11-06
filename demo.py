@@ -3,7 +3,7 @@ demo.py
 =======
 Données de DÉMONSTRATION pour visualiser le tableau de bord sans accès
 Earth Engine. Les valeurs sont tirées du générateur synthétique calé sur le
-climat d'Errachidia : elles ne décrivent pas la parcelle dessinée et sont
+climat de la zone agricole : elles ne décrivent pas la parcelle dessinée et sont
 signalées comme telles dans l'interface et le rapport.
 """
 
@@ -15,7 +15,7 @@ import pandas as pd
 
 from extract_data import CHIRPSExtractor, ERA5Extractor, compute_humidity_relative
 from generate_training_data import generate_samples
-from region import MONTHLY_PRECIP_MM, MONTHLY_TEMP_MEAN_C
+from region import ZONES, zone_for_point
 from train_model import FEATURE_COLUMNS
 
 
@@ -25,7 +25,12 @@ def make_demo_extraction(coordinates: List[List[float]], analysis_date: str, loo
     seed = abs(hash((round(coordinates[0][0], 4), round(coordinates[0][1], 4), analysis_date))) % (2 ** 32)
     rng = np.random.default_rng(seed)
 
-    row = generate_samples(1, rng).iloc[0]
+    lat = sum(c[1] for c in coordinates) / len(coordinates)
+    lon = sum(c[0] for c in coordinates) / len(coordinates)
+    zone_id, place, zone_km = zone_for_point(lat, lon)
+    zone = ZONES[zone_id]
+
+    row = generate_samples(1, rng, zone_id).iloc[0]
     features = {c: float(row[c]) for c in FEATURE_COLUMNS}
     angle = 2 * np.pi * end_dt.timetuple().tm_yday / 366.0
     features["day_of_year_sin"], features["day_of_year_cos"] = float(np.sin(angle)), float(np.cos(angle))
@@ -34,8 +39,8 @@ def make_demo_extraction(coordinates: List[List[float]], analysis_date: str, loo
     dates = [end_dt - timedelta(days=days - 1 - i) for i in range(days)]
     month = end_dt.month - 1
 
-    precip = np.where(rng.random(days) < 0.12, rng.gamma(1.2, MONTHLY_PRECIP_MM[month] / 3 + 0.5, days), 0.0)
-    t_mean = MONTHLY_TEMP_MEAN_C[month] + rng.normal(0, 1.8, days)
+    precip = np.where(rng.random(days) < 0.12, rng.gamma(1.2, zone["precip"][month] / 3 + 0.5, days), 0.0)
+    t_mean = zone["temp"][month] + rng.normal(0, 1.8, days)
     t_max = t_mean + rng.uniform(6, 9, days)
     t_min = t_mean - rng.uniform(6, 9, days)
     dew = t_mean - rng.uniform(12, 22, days)
@@ -75,4 +80,5 @@ def make_demo_extraction(coordinates: List[List[float]], analysis_date: str, loo
         "date_analyzed": analysis_date,
         "lookback_days": lookback_days,
         "demo": True,
+        "zone": {"id": zone_id, "name": zone["name"], "nearest_place": place, "distance_km": round(zone_km, 1)},
     }

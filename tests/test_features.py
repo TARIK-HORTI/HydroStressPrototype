@@ -84,7 +84,8 @@ def test_assemble_features_matches_model_columns():
     chirps = CHIRPSExtractor().aggregate_features(chirps_df([0.0] * 30))
     era5 = {"temperature_mean": 30.0, "temperature_max": 42.0, "temperature_min": 20.0,
             "humidity_mean": 25.0, "humidity_min": 8.0}
-    feats = assemble_features(stats, chirps, era5, datetime(2024, 7, 15))
+    site = {"elevation_m": 450.0, "precip_annual_normal_mm": 280.0}
+    feats = assemble_features(stats, chirps, era5, datetime(2024, 7, 15), site)
     assert sorted(feats) == sorted(FEATURE_COLUMNS)
 
 

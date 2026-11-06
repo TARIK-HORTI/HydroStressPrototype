@@ -1,7 +1,7 @@
 """
 app.py
 ======
-HydroStress Errachidia — tableau de bord sur une seule page.
+HydroStress Maroc — tableau de bord sur une seule page.
 
 1. En-tête : présentation du service et des sources de données
 2. Carte (choix de la zone + dessin de la parcelle) et panneau d'analyse côte à côte
@@ -33,21 +33,12 @@ from extract_data import (
     validate_geometry,
 )
 from predict import HydroStressPredictor
-from region import (
-    CROPS,
-    MAP_CENTER,
-    MAP_ZOOM,
-    MONTHLY_PRECIP_MM,
-    MONTHLY_RH_MEAN,
-    MONTHLY_TEMP_MEAN_C,
-    OASES,
-    REGION_BBOX,
-    REGION_NAME,
-)
+from region import CROPS, MAP_CENTER, MAP_ZOOM, ZONES, zone_for_point
 from report import CLASS_STYLES, STATUS_LABELS, build_report, report_to_html
+from stations import validate_analysis
 
 st.set_page_config(
-    page_title="HydroStress Errachidia",
+    page_title="HydroStress Maroc",
     page_icon="💧",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -129,7 +120,8 @@ def get_pipeline() -> DataPipeline:
 
 
 def init_state():
-    for key, val in {"result": None, "parcel_key": None, "error": None}.items():
+    for key, val in {"result": None, "parcel_key": None, "error": None, "detected_zone": None,
+                     "station": None}.items():
         st.session_state.setdefault(key, val)
 
 
@@ -144,7 +136,7 @@ def hero(predictor):
     synthetic = meta.get("data_source") == "synthetic"
     chips = [
         "🛰️ Sentinel-2 · 10 m", "🌧️ CHIRPS · pluie quotidienne", "🌡️ ERA5-Land · T° & humidité",
-        "🤖 Random Forest calibré", f"🌴 {len(OASES)} oasis",
+        "🤖 Random Forest calibré", f"🗺️ {len(ZONES)} zones agricoles",
     ]
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
@@ -152,14 +144,15 @@ def hero(predictor):
     st.markdown(
         f"""
 <div class="hs-hero">
-  <h1>💧 HydroStress <span>Errachidia</span></h1>
-  <p>Suivi du stress hydrique des parcelles agricoles de la {REGION_NAME} (vallée du Ziz,
-  Tafilalet, Ghéris, Boudnib), par télédétection et apprentissage automatique.
-  Choisissez une zone, dessinez votre parcelle et obtenez un diagnostic avec des recommandations.</p>
+  <h1>💧 HydroStress <span>Maroc</span></h1>
+  <p>Suivi du stress hydrique des parcelles agricoles partout au Maroc (Gharb, Saïs, Tadla, Haouz,
+  Chaouia-Doukkala, Souss-Massa, Oriental, oasis du Tafilalet et du Drâa), par télédétection et
+  apprentissage automatique. Choisissez une zone, dessinez votre parcelle et obtenez un diagnostic
+  avec des recommandations adaptées à la région et à la culture.</p>
   {chips_html}
 </div>
 <div class="hs-steps">
-  <div class="hs-step"><b>ÉTAPE 1</b><div>Choisissez une oasis et dessinez la parcelle sur la carte satellite.</div></div>
+  <div class="hs-step"><b>ÉTAPE 1</b><div>Choisissez une région et dessinez la parcelle sur la carte satellite.</div></div>
   <div class="hs-step"><b>ÉTAPE 2</b><div>Indiquez la culture et la date, puis lancez l'analyse.</div></div>
   <div class="hs-step"><b>ÉTAPE 3</b><div>Lisez le rapport ci-dessous et téléchargez-le.</div></div>
 </div>
@@ -168,26 +161,21 @@ def hero(predictor):
     )
 
 
+ZONE_COLORS = ["#2DD4BF", "#38BDF8", "#A78BFA", "#F472B6", "#FACC15", "#FB923C", "#4ADE80", "#F87171", "#E2E8F0"]
+
+
 def build_map(center, zoom):
-    lon_min, lat_min, lon_max, lat_max = REGION_BBOX
-    m = folium.Map(
-        location=list(center), zoom_start=zoom, tiles=None, control_scale=True,
-        min_lat=lat_min - 0.5, max_lat=lat_max + 0.5,
-        min_lon=lon_min - 0.5, max_lon=lon_max + 0.5, max_bounds=True,
-    )
+    m = folium.Map(location=list(center), zoom_start=zoom, tiles=None, control_scale=True,
+                   min_zoom=5, max_bounds=True, min_lat=19, max_lat=37.5, min_lon=-19, max_lon=1)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri World Imagery", name="Satellite",
     ).add_to(m)
     folium.TileLayer("OpenStreetMap", name="Plan").add_to(m)
-    folium.Rectangle(
-        bounds=[[lat_min, lon_min], [lat_max, lon_max]],
-        color=ACCENT, weight=2, fill=False, dash_array="6",
-        tooltip="Zone d'étude : province d'Errachidia",
-    ).add_to(m)
-    for name, (lat, lon) in OASES.items():
-        folium.CircleMarker(location=[lat, lon], radius=5, color=ACCENT, fill=True,
-                            fill_opacity=.9, tooltip=name).add_to(m)
+    for color, zone in zip(ZONE_COLORS, ZONES.values()):
+        for place, (lat, lon) in zone["places"].items():
+            folium.CircleMarker(location=[lat, lon], radius=5, color=color, fill=True, fill_opacity=.9,
+                                tooltip=f"{place} — {zone['name']}").add_to(m)
     Draw(
         export=False,
         draw_options={
@@ -252,7 +240,7 @@ def plot_weather(chirps: pd.DataFrame, era5: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # Analyse
 # ---------------------------------------------------------------------------
-def run_analysis(predictor, coordinates, zone, crop, analysis_date, lookback, demo: bool):
+def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bool):
     """Extraction + prédiction + rapport, résultat stocké dans la session."""
     st.session_state.error = None
     with st.status("Analyse de la parcelle en cours…", expanded=True) as status:
@@ -268,16 +256,21 @@ def run_analysis(predictor, coordinates, zone, crop, analysis_date, lookback, de
                 pipeline = get_pipeline()
                 st.write("Extraction Sentinel-2, CHIRPS et ERA5-Land (30 à 90 s)")
                 data = pipeline.extract_all_data(coordinates, date_str, lookback)
+            zone_info = data["zone"]
+            zone_text = f"{zone_info['name']} (près de {zone_info['nearest_place']})"
             st.write("Prédiction du stress hydrique")
             prediction = predictor.predict(data["features"])
             if not demo:
                 predictor.log_prediction(prediction)
             report = build_report(
-                coordinates=coordinates, area_km2=polygon_area_km2(poly), zone=zone, crop=crop, data=data,
-                prediction=prediction, recommendations=predictor.get_recommendations(prediction, crop),
-                interpretation=predictor.interpret_indices(data["features"]), model_meta=predictor.metadata,
+                coordinates=coordinates, area_km2=polygon_area_km2(poly), zone=zone_text, crop=crop, data=data,
+                prediction=prediction,
+                recommendations=predictor.get_recommendations(prediction, crop, zone_info["id"]),
+                interpretation=predictor.interpret_indices(data["features"], zone_info["id"]),
+                model_meta=predictor.metadata,
             )
             st.session_state.result = {"data": data, "report": report}
+            st.session_state.station = None
             status.update(label="Analyse terminée", state="complete", expanded=False)
         except (DataUnavailableError, ValueError) as e:
             st.session_state.error = str(e)
@@ -388,6 +381,61 @@ Parcelle de {report['parcel']['area_ha']} ha · centre {lat}, {lon}</div></div>"
         )
         st.caption("Le rapport HTML s'ouvre dans le navigateur et s'imprime en PDF (Ctrl+P).")
 
+    render_station_validation(report, data)
+
+
+def render_station_validation(report, data):
+    st.markdown("<div class='hs-section'>Validation par station météo (NOAA)</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.caption(
+            "Compare la météo utilisée (ERA5-Land, CHIRPS) aux observations de la station synoptique "
+            "la plus proche (moins de 150 km). Les stations sont trop espacées pour remplacer ces données, "
+            "mais elles permettent de vérifier leur cohérence."
+        )
+        if report["demo"]:
+            st.info("Indisponible pour les données de démonstration.")
+            return
+        if st.button("Comparer avec la station la plus proche", key="station_btn"):
+            lat, lon = report["parcel"]["centroid"]
+            with st.spinner("Recherche de la station et téléchargement des observations…"):
+                try:
+                    st.session_state.station = validate_analysis(lat, lon, data["chirps_series"],
+                                                                 data["era5_series"])
+                except Exception as e:
+                    logger.exception("Validation station")
+                    st.session_state.station = {"station": None, "message": f"Service NOAA indisponible : {e}"}
+        res = st.session_state.station
+        if not res:
+            return
+        if not res.get("station"):
+            st.warning(res.get("message", "Aucune station disponible."))
+            return
+        stn, m = res["station"], res["metrics"]
+        st.markdown(f"**{stn['name']}** · {stn['distance_km']} km de la parcelle · altitude {stn['elevation_m']:.0f} m")
+        rows = []
+        labels = {"temperature_mean": "T° moyenne (°C)", "temperature_max": "T° max (°C)",
+                  "precipitation": "Pluie (mm/jour)"}
+        for key, label in labels.items():
+            if key in m:
+                rows.append({"Variable": label, "Jours comparés": m[key]["days"], "Biais (maillé − station)": m[key]["bias"],
+                             "Erreur moyenne": m[key]["mae"], "Corrélation": m[key]["corr"]})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        if "precipitation" in m:
+            p = m["precipitation"]
+            st.caption(f"Cumul de pluie sur les jours communs : station {p['total_station_mm']} mm, "
+                       f"CHIRPS {p['total_grid_mm']} mm.")
+        series, era5 = res["series"], data["era5_series"]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=series["date"], y=series["temperature_c"], name="Station · T° moyenne",
+                                 line=dict(color="#E2E8F0", width=2)))
+        if not era5.empty:
+            fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name="ERA5-Land · T° moyenne",
+                                     line=dict(color="#FACC15", width=2, dash="dot")))
+        fig.update_layout(template="plotly_dark", height=260, margin=dict(l=10, r=10, t=10, b=10),
+                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                          legend=dict(orientation="h", y=1.15, x=0), yaxis_title="°C")
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
 
 # ---------------------------------------------------------------------------
 # Bas de page : modèle et simulation
@@ -406,26 +454,28 @@ def render_model_section(predictor):
         kpi("Entraîné le", (meta.get("created_at") or "—")[:10])
     if meta.get("data_source") == "synthetic":
         st.caption(
-            "Le modèle actuel est entraîné sur des données synthétiques calées sur le climat d'Errachidia. "
+            "Le modèle actuel est entraîné sur des données synthétiques calées sur les climats des zones agricoles du Maroc. "
             "Il sera remplacé par un modèle entraîné sur des données réelles (build_dataset.py)."
         )
 
 
 def render_simulation(predictor):
     month = datetime.now().month - 1
+    zone_id = st.selectbox("Zone agricole", list(ZONES), format_func=lambda z: ZONES[z]["name"], key="sim_zone")
+    zone = ZONES[zone_id]
     c1, c2, c3 = st.columns(3)
     with c1:
         ndvi = st.slider("NDVI", -0.1, 0.9, 0.45, 0.01, key="sim_ndvi")
         ndwi = st.slider("NDWI", -0.4, 0.6, 0.15, 0.01, key="sim_ndwi")
         msi = st.slider("MSI", 0.2, 2.5, 0.75, 0.01, key="sim_msi")
     with c2:
-        precip_30j = st.slider("Pluie 30 jours (mm)", 0.0, 150.0, float(MONTHLY_PRECIP_MM[month]), 1.0, key="sim_p")
+        precip_30j = st.slider("Pluie 30 jours (mm)", 0.0, 150.0, float(zone["precip"][month]), 1.0, key=f"sim_p_{zone_id}")
         dry_days = st.slider("Jours secs consécutifs", 0, 30, 20, 1, key="sim_dry")
-        crop = st.selectbox("Culture", CROPS, key="sim_crop")
+        crop = st.selectbox("Culture", zone["crops"], key=f"sim_crop_{zone_id}")
     with c3:
-        temp_mean = st.slider("T° moyenne (°C)", -5.0, 45.0, float(MONTHLY_TEMP_MEAN_C[month]), 0.5, key="sim_t")
-        temp_max = st.slider("T° max (°C)", 0.0, 52.0, float(MONTHLY_TEMP_MEAN_C[month] + 11), 0.5, key="sim_tmax")
-        humidity = st.slider("Humidité moyenne (%)", 0.0, 100.0, float(MONTHLY_RH_MEAN[month]), 1.0, key="sim_rh")
+        temp_mean = st.slider("T° moyenne (°C)", -5.0, 45.0, float(zone["temp"][month]), 0.5, key=f"sim_t_{zone_id}")
+        temp_max = st.slider("T° max (°C)", 0.0, 52.0, float(zone["temp"][month] + 11), 0.5, key=f"sim_tmax_{zone_id}")
+        humidity = st.slider("Humidité moyenne (%)", 0.0, 100.0, float(zone["rh"][month]), 1.0, key=f"sim_rh_{zone_id}")
 
     sin_doy, cos_doy = day_of_year_cyclic(datetime.now())
     data = {
@@ -439,10 +489,11 @@ def render_simulation(predictor):
         "temperature_mean": temp_mean, "temperature_max": temp_max, "temperature_min": temp_mean - 10,
         "humidity_mean": humidity, "humidity_min": max(humidity - 18.0, 3.0),
         "day_of_year_sin": sin_doy, "day_of_year_cos": cos_doy,
+        "elevation_m": float(sum(zone["elevation"]) / 2), "precip_annual_normal_mm": float(sum(zone["precip"])),
     }
     pred = predictor.predict(data)
     style = CLASS_STYLES[pred["class_index"]]
-    rec = predictor.get_recommendations(pred, crop)
+    rec = predictor.get_recommendations(pred, crop, zone_id)
     c_res, c_rec = st.columns([1, 1.4], gap="large")
     with c_res:
         st.markdown(
@@ -472,8 +523,17 @@ def main():
 
     with col_panel:
         st.markdown("<div class='hs-section'>Zone et paramètres</div>", unsafe_allow_html=True)
-        zone = st.selectbox("Zone", ["Toute la province"] + list(OASES.keys()), index=0)
-        crop = st.selectbox("Culture de la parcelle", CROPS)
+        c_zone, c_place = st.columns(2)
+        with c_zone:
+            zone_choice = st.selectbox("Région agricole", ["Tout le Maroc"] + list(ZONES),
+                                       format_func=lambda z: ZONES[z]["name"] if z in ZONES else z)
+        with c_place:
+            places = ["Toute la région"] + (list(ZONES[zone_choice]["places"]) if zone_choice in ZONES else [])
+            place = st.selectbox("Localité", places, disabled=zone_choice not in ZONES)
+        # Cultures : celles de la zone choisie ou détectée en premier, puis les autres
+        crop_zone = zone_choice if zone_choice in ZONES else st.session_state.detected_zone
+        zone_crops = ZONES[crop_zone]["crops"] if crop_zone in ZONES else []
+        crop = st.selectbox("Culture de la parcelle", zone_crops + [c for c in CROPS if c not in zone_crops])
         c_date, c_win = st.columns(2)
         with c_date:
             analysis_date = st.date_input(
@@ -486,13 +546,19 @@ def main():
                                         format_func=lambda d: f"{d} jours",
                                         help="Période du composite Sentinel-2 sans nuages.")
 
-    center, zoom = (MAP_CENTER, MAP_ZOOM) if zone == "Toute la province" else (OASES[zone], 14)
+    if zone_choice not in ZONES:
+        center, zoom = MAP_CENTER, MAP_ZOOM
+    elif place in ZONES[zone_choice]["places"]:
+        center, zoom = ZONES[zone_choice]["places"][place], 14
+    else:
+        pts = list(ZONES[zone_choice]["places"].values())
+        center, zoom = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)), 9
 
     with col_map:
         st.markdown("<div class='hs-section'>Carte · dessinez votre parcelle</div>", unsafe_allow_html=True)
         map_data = st_folium(
             build_map(center, zoom), height=560, use_container_width=True,
-            returned_objects=["last_active_drawing"], key=f"map_{zone}",
+            returned_objects=["last_active_drawing"], key=f"map_{zone_choice}_{place}",
         )
 
     coordinates = None
@@ -508,9 +574,16 @@ def main():
                 poly = validate_geometry(coordinates)
                 area_ha = polygon_area_km2(poly) * 100
                 c = Polygon(coordinates).centroid
+                zone_id, near, dist = zone_for_point(c.y, c.x)
+                if st.session_state.detected_zone != zone_id:
+                    st.session_state.detected_zone = zone_id
+                    st.rerun()  # met à jour la liste des cultures
+                far = (f"<br><span style='color:#FCD34D'>⚠ À {dist:.0f} km de la localité de référence la plus "
+                       f"proche : seuils et recommandations approximatifs.</span>") if dist > 150 else ""
                 st.markdown(
                     f"<div class='hs-parcel'>✅ <b>Parcelle prête</b> · {area_ha:.2f} ha · "
-                    f"{len(coordinates) - 1} sommets<br>Centre : {c.y:.4f}, {c.x:.4f}</div>",
+                    f"{len(coordinates) - 1} sommets<br>Centre : {c.y:.4f}, {c.x:.4f}<br>"
+                    f"Zone détectée : <b>{ZONES[zone_id]['name']}</b> (près de {near}){far}</div>",
                     unsafe_allow_html=True,
                 )
             except ValueError as e:
@@ -519,7 +592,7 @@ def main():
         else:
             st.markdown(
                 "<div class='hs-parcel'>✏️ Utilisez l'outil <b>rectangle</b> ou <b>polygone</b> de la carte "
-                "pour dessiner votre parcelle (≤ 10 km², dans la province).</div>",
+                "pour dessiner votre parcelle (≤ 10 km², au Maroc).</div>",
                 unsafe_allow_html=True,
             )
 
@@ -534,7 +607,7 @@ def main():
             st.session_state.parcel_key = parcel_key
 
         if analyse or demo:
-            run_analysis(predictor, coordinates, zone, crop, analysis_date, lookback, demo=demo)
+            run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo=demo)
         if st.session_state.error:
             st.error(st.session_state.error)
 
@@ -549,7 +622,7 @@ def main():
         render_simulation(predictor)
 
     st.markdown(
-        "<div class='hs-foot'>HydroStress Errachidia · Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
+        "<div class='hs-foot'>HydroStress Maroc · Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
         "ERA5-Land (ECMWF) via Google Earth Engine · Prototype de recherche, résultats indicatifs</div>",
         unsafe_allow_html=True,
     )

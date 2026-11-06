@@ -1,7 +1,7 @@
 import pytest
 
 from extract_data import polygon_area_km2, validate_geometry
-from region import OASES, is_in_region, validate_in_region
+from region import ZONES, is_in_region, validate_in_region, zone_for_point
 
 
 def square(lon, lat, half_deg=0.005):
@@ -14,9 +14,19 @@ def square(lon, lat, half_deg=0.005):
     ]
 
 
-def test_all_oases_inside_region():
-    for lat, lon in OASES.values():
-        assert is_in_region(lon, lat)
+def test_all_reference_places_inside_morocco():
+    for zone in ZONES.values():
+        for lat, lon in zone["places"].values():
+            assert is_in_region(lon, lat)
+
+
+def test_zone_detection():
+    assert zone_for_point(31.63, -7.98)[0] == "haouz"
+    assert zone_for_point(31.43, -4.23)[0] == "errachidia"
+    assert zone_for_point(30.40, -9.30)[0] == "souss"
+    assert zone_for_point(34.30, -6.20)[0] == "gharb"
+    zone_id, place, km = zone_for_point(30.33, -5.84)
+    assert zone_id == "draa" and place == "Zagora" and km < 1
 
 
 def test_valid_parcel_in_errachidia():
@@ -30,16 +40,21 @@ def test_unclosed_ring_is_closed():
     validate_geometry(coords)
 
 
-def test_parcel_outside_region_rejected():
-    marrakech = square(-7.98, 31.63)
+def test_parcels_across_morocco_accepted():
+    for lon, lat in [(-7.98, 31.63), (-6.58, 34.26), (-9.37, 30.21), (-2.32, 34.92)]:
+        validate_geometry(square(lon, lat))
+
+
+def test_parcel_outside_morocco_rejected():
+    seville = square(-5.98, 37.39)
     with pytest.raises(ValueError, match="hors zone"):
-        validate_geometry(marrakech)
+        validate_geometry(seville)
     with pytest.raises(ValueError):
-        validate_in_region(marrakech)
+        validate_in_region(seville)
 
 
 def test_region_check_can_be_disabled():
-    validate_geometry(square(-7.98, 31.63), require_region=False)
+    validate_geometry(square(-5.98, 37.39), require_region=False)
 
 
 def test_parcel_too_large_rejected():
