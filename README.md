@@ -230,6 +230,44 @@ Les réflectances Sentinel-2 L2A sont converties en [0, 1] (÷ 10 000) avant le 
 
 ---
 
+## 🌐 Déploiement sur votre propre domaine (ex. hydrostress.wahatech.ma)
+
+Streamlit Community Cloud ne gère pas les domaines personnalisés. Deux options :
+
+**Option A, la plus simple : lien ou iframe.** Gardez l'app sur `*.streamlit.app` et, sur le site
+principal, ajoutez un bouton vers l'app, ou une iframe vers `https://<app>.streamlit.app/?embed=true`.
+Un sous-domaine peut aussi rediriger (redirection 301 chez le registrar) vers l'URL streamlit.app.
+
+**Option B, domaine propre : Docker + Google Cloud Run.**
+
+```bash
+# 1. Secret : la clé JSON du compte de service dans Secret Manager (jamais dans Git)
+gcloud secrets create ee-service-account --data-file=key.json
+
+# 2. Build + déploiement (région européenne la plus proche du Maroc)
+gcloud run deploy hydrostress --source . --region europe-west1 --allow-unauthenticated \
+  --memory 1Gi --set-env-vars HYDROSTRESS_STAGE=beta,HYDROSTRESS_BRAND=Wahatech \
+  --set-secrets EE_SERVICE_ACCOUNT_JSON=ee-service-account:latest
+
+# 3. Domaine : mappage du sous-domaine, puis ajout chez le registrar de l'enregistrement DNS indiqué
+gcloud beta run domain-mappings create --service hydrostress --domain hydrostress.wahatech.ma --region europe-west1
+```
+
+Le domaine doit d'abord être vérifié dans Google Search Console. Le certificat HTTPS est fourni
+automatiquement. Le compte de service de Cloud Run doit pouvoir lire le secret
+(`roles/secretmanager.secretAccessor`).
+
+### Réglages
+
+| Variable | Valeurs | Effet |
+|---|---|---|
+| `HYDROSTRESS_STAGE` | `beta` (défaut), `production` | `beta` affiche le badge BÊTA et la mention « version de démonstration » |
+| `HYDROSTRESS_BRAND` | ex. `Wahatech` | Nom de l'organisation dans le bandeau et le pied de page |
+| `EE_SERVICE_ACCOUNT_JSON` | contenu JSON brut | Compte de service Earth Engine (serveur, Docker, Cloud Run) |
+
+Sur Streamlit Cloud, les mêmes réglages peuvent être ajoutés dans *Secrets*
+(`HYDROSTRESS_STAGE = "beta"`). Le jour du lancement officiel, passez `HYDROSTRESS_STAGE` à `production`.
+
 ## 🐛 Dépannage
 
 | Problème | Solution |

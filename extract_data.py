@@ -13,6 +13,8 @@ des indices spectraux pour l'analyse du stress hydrique au Maroc.
   lève DataUnavailableError.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -20,7 +22,10 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-import ee
+try:
+    import ee
+except ImportError:  # mode démonstration sans Earth Engine (earthengine-api non installé)
+    ee = None
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
@@ -108,7 +113,17 @@ def _service_account_from_streamlit() -> Optional[dict]:
 
 
 def _service_account_from_env() -> Optional[dict]:
-    """Lit un fichier JSON de compte de service désigné par variable d'environnement."""
+    """
+    Compte de service via l'environnement (serveur, Docker, Cloud Run) :
+    EE_SERVICE_ACCOUNT_JSON (contenu JSON brut, p. ex. injecté depuis Secret Manager),
+    sinon un fichier désigné par EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS.
+    """
+    raw = os.environ.get("EE_SERVICE_ACCOUNT_JSON", "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"EE_SERVICE_ACCOUNT_JSON invalide : JSON attendu ({e}).") from e
     for var in ("EE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
         path = os.environ.get(var)
         if path and os.path.exists(path):
@@ -122,12 +137,15 @@ def initialize_earth_engine() -> str:
     Initialise Earth Engine, dans cet ordre :
     1. Compte de service dans st.secrets (GCP_SERVICE_ACCOUNT_JSON ou
        [GCP_SERVICE_ACCOUNT], Streamlit Cloud)
-    2. Fichier JSON via EE_SERVICE_ACCOUNT_FILE ou GOOGLE_APPLICATION_CREDENTIALS
+    2. Variable EE_SERVICE_ACCOUNT_JSON (JSON brut) ou fichier via
+       EE_SERVICE_ACCOUNT_FILE / GOOGLE_APPLICATION_CREDENTIALS
     3. Identifiants utilisateur de `earthengine authenticate` (projet via EE_PROJECT)
 
     Returns:
         str: méthode d'authentification utilisée
     """
+    if ee is None:
+        raise RuntimeError("earthengine-api n'est pas installé : pip install earthengine-api")
     info = _service_account_from_streamlit() or _service_account_from_env()
     if info:
         from google.oauth2 import service_account
