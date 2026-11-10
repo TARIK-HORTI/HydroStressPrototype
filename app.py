@@ -25,6 +25,7 @@ from shapely.geometry import Polygon
 from streamlit_folium import st_folium
 
 from demo import make_demo_extraction
+from farm_ui import render_farm_training
 from extract_data import (
     DataPipeline,
     DataUnavailableError,
@@ -620,6 +621,8 @@ def main():
         render_model_section(predictor)
     with st.expander("🎛️ Simulation manuelle (sans satellite)"):
         render_simulation(predictor)
+    with st.expander("🌴 Entraîner sur ma ferme (données réelles)"):
+        render_farm_training()
 
     st.markdown(
         "<div class='hs-foot'>HydroStress Maroc · Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
