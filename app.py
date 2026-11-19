@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from folium.plugins import Draw
+from folium.plugins import Draw, Geocoder
 from plotly.subplots import make_subplots
 from shapely.geometry import Polygon
 from streamlit_folium import st_folium
@@ -205,6 +205,15 @@ def build_map(center, zoom):
         attr="Esri World Imagery", name="Satellite",
     ).add_to(m)
     folium.TileLayer("OpenStreetMap", name="Plan").add_to(m)
+    # Noms des villes, villages et frontières par-dessus l'image satellite (affichés par défaut)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Boundaries & Places", name="Noms des lieux", overlay=True, control=True, show=True,
+    ).add_to(m)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Transportation", name="Routes", overlay=True, control=True, show=False,
+    ).add_to(m)
     for color, zone in zip(ZONE_COLORS, ZONES.values()):
         for place, (lat, lon) in zone["places"].items():
             folium.CircleMarker(location=[lat, lon], radius=5, color=color, fill=True, fill_opacity=.9,
@@ -219,7 +228,10 @@ def build_map(center, zoom):
         },
         edit_options={"edit": False, "remove": True},
     ).add_to(m)
-    folium.LayerControl(position="topright").add_to(m)
+    # Recherche d'un lieu (ville, douar, commune) pour se déplacer vite jusqu'à sa ferme
+    Geocoder(collapsed=False, position="topleft", add_marker=False,
+             placeholder="Chercher un lieu (ex. Errachidia, Chorfa M'Daghra)…").add_to(m)
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
     return m
 
 
