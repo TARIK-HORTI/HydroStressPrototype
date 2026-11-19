@@ -104,3 +104,39 @@ def test_service_account_secret_formats():
     table = {"GCP_SERVICE_ACCOUNT": {"type": "service_account", "project_id": "p2"}}
     assert parse_service_account_secrets(table)["project_id"] == "p2"
     assert parse_service_account_secrets({}) is None
+
+
+def test_service_account_from_env_json(monkeypatch):
+    import pytest
+    from extract_data import _service_account_from_env
+    monkeypatch.delenv("EE_SERVICE_ACCOUNT_FILE", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("EE_SERVICE_ACCOUNT_JSON", '{"client_email": "a@b.iam", "project_id": "p3"}')
+    assert _service_account_from_env()["project_id"] == "p3"
+    monkeypatch.setenv("EE_SERVICE_ACCOUNT_JSON", "pas du json")
+    with pytest.raises(ValueError):
+        _service_account_from_env()
+    monkeypatch.delenv("EE_SERVICE_ACCOUNT_JSON")
+    assert _service_account_from_env() is None
+
+
+def test_demo_extraction_is_reproducible_across_processes():
+    import subprocess
+    import sys
+    code = ("from demo import make_demo_extraction;"
+            "c=[[-4.233,31.433],[-4.231,31.433],[-4.231,31.431],[-4.233,31.433]];"
+            "print(make_demo_extraction(c,'2024-08-15')['features']['NDVI_mean'])")
+    runs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+            for _ in range(2)}
+    assert len(runs) == 1
+
+
+def test_demo_works_without_earthengine():
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['ee'] = None;"  # simule earthengine-api absent
+            "from demo import make_demo_extraction;"
+            "c=[[-4.233,31.433],[-4.231,31.433],[-4.231,31.431],[-4.233,31.433]];"
+            "print(len(make_demo_extraction(c,'2024-08-15')['features']))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr

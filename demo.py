@@ -7,6 +7,7 @@ climat de la zone agricole : elles ne décrivent pas la parcelle dessinée et so
 signalées comme telles dans l'interface et le rapport.
 """
 
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -22,7 +23,9 @@ from train_model import FEATURE_COLUMNS
 def make_demo_extraction(coordinates: List[List[float]], analysis_date: str, lookback_days: int = 30) -> Dict[str, Any]:
     """Retourne un résultat au même format que DataPipeline.extract_all_data, marqué demo=True."""
     end_dt = datetime.strptime(analysis_date, "%Y-%m-%d")
-    seed = abs(hash((round(coordinates[0][0], 4), round(coordinates[0][1], 4), analysis_date))) % (2 ** 32)
+    # Graine stable d'un processus à l'autre (hash() de Python change à chaque lancement)
+    key = f"{coordinates[0][0]:.4f},{coordinates[0][1]:.4f},{analysis_date}".encode()
+    seed = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
     rng = np.random.default_rng(seed)
 
     lat = sum(c[1] for c in coordinates) / len(coordinates)
