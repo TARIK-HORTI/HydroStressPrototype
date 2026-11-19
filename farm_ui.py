@@ -25,7 +25,13 @@ FARMS_DIR = Path("farms")
 
 def _farm_form() -> Farm | None:
     saved = sorted(FARMS_DIR.glob("*.json")) if FARMS_DIR.exists() else []
-    choice = st.selectbox("Ferme", ["➕ Nouvelle ferme"] + [p.stem for p in saved])
+    options = ["➕ Nouvelle ferme"] + [p.stem for p in saved]
+    # Après « Enregistrer », la ferme enregistrée devient la ferme choisie (sinon les étapes suivantes disparaissent)
+    a_choisir = st.session_state.pop("_ferme_a_choisir", None)
+    if a_choisir in options:
+        st.session_state["ferme_choisie"] = a_choisir
+        st.toast(f"Ferme enregistrée : {a_choisir}", icon="✅")
+    choice = st.selectbox("Ferme", options, key="ferme_choisie")
     current = Farm.load(FARMS_DIR / f"{choice}.json") if choice != "➕ Nouvelle ferme" else None
 
     with st.form("farm_form"):
@@ -58,8 +64,8 @@ def _farm_form() -> Farm | None:
                         spacing_row_m=row, spacing_tree_m=tree, area_ha=area or None,
                         planting_year=int(year), irrigation=irrigation, soil=soil)
             farm.save(FARMS_DIR)
-            st.success(f"Ferme enregistrée : {farm.id}")
-            return farm
+            st.session_state["_ferme_a_choisir"] = farm.id
+            st.rerun()
         except ValueError as e:
             st.error(str(e))
             return None
