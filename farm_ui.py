@@ -3,12 +3,14 @@ farm_ui.py
 ==========
 Section Streamlit « Entraîner sur ma ferme » : saisie de la ferme (position,
 culture, écartement), téléchargement du climat, lecture des registres
-d'irrigation et bilan hydrique. Les étapes Earth Engine (dataset complet et
-entraînement) restent en ligne de commande (farm_dataset.py) car elles
-prennent du temps.
+d'irrigation, bilan hydrique, puis dataset satellite (Earth Engine) et
+entraînement du modèle, directement dans l'application. Le dataset satellite
+reprend là où il s'est arrêté si la page est fermée ou si la session expire.
 """
 
+import io
 import tempfile
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -157,10 +159,77 @@ def _balance_step(farm: Farm, climate: pd.DataFrame, irrigation: pd.DataFrame):
     st.dataframe(dist.rename(columns={0: "🟢 normal", 1: "🟡 modéré", 2: "🔴 sévère"}), width="stretch")
     labels.to_csv(_data_dir(farm) / "etiquettes.csv", index=False)
     st.download_button("Télécharger les étiquettes (CSV)", labels.to_csv(index=False), f"{farm.id}_etiquettes.csv")
-    st.markdown(
-        "Étape suivante (Earth Engine, quelques dizaines de minutes) :\n"
-        f"```\npython farm_dataset.py build farms/{farm.id}.json\npython farm_dataset.py train farms/{farm.id}.json\n```"
-    )
+
+
+def _dataset_step(farm: Farm, climate: pd.DataFrame, irrigation: pd.DataFrame | None):
+    from farm_dataset import build_dataset
+
+    path = _data_dir(farm) / "dataset.csv"
+    c1, c2, c3 = st.columns([1, 1, 2])
+    every = c1.selectbox("Une date tous les", [10, 15, 20, 30], format_func=lambda n: f"{n} jours",
+                         help="Moins de dates = extraction plus rapide, mais moins d'exemples pour l'entraînement.")
+    restart = c2.checkbox("Recommencer", value=False, help="Ignorer le dataset déjà extrait et tout refaire.")
+    if c3.button("🛰️ Extraire les données satellite (Earth Engine)", width="stretch"):
+        bar = st.progress(0.0, text="Connexion à Earth Engine…")
+
+        def progress(i, total, message):
+            bar.progress(i / max(total, 1), text=f"{i}/{total} · {message}")
+
+        try:
+            df, skipped = build_dataset(farm, climate, irrigation, path, every_days=every,
+                                        resume=not restart, progress=progress)
+            bar.progress(1.0, text="Terminé")
+            st.success(f"{len(df)} échantillons ({skipped} dates sans image Sentinel-2 exploitable).")
+        except Exception as e:  # Earth Engine non configuré, quota, réseau…
+            st.error(f"Extraction interrompue : {e}. Relancez : elle reprendra là où elle s'est arrêtée.")
+    if path.exists():
+        df = pd.read_csv(path)
+        if not df.empty:
+            dist = df.groupby("campagne")["stress_class"].value_counts().unstack(fill_value=0)
+            st.dataframe(dist.rename(columns={0: "🟢 normal", 1: "🟡 modéré", 2: "🔴 sévère"}), width="stretch")
+            st.download_button("Télécharger le dataset (CSV)", df.to_csv(index=False), f"{farm.id}_dataset.csv")
+            return path
+    return None
+
+
+def _model_zip(prefix: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for suffix in ("_pipeline.joblib", "_metadata.json"):
+            f = Path(prefix + suffix)
+            if f.exists():
+                z.write(f, "hydrostress" + suffix)
+    return buf.getvalue()
+
+
+def _train_step(farm: Farm, dataset_path: Path):
+    from farm_dataset import MIN_CAMPAIGNS, train_farm_model
+
+    n = pd.read_csv(dataset_path)["campagne"].nunique()
+    if n < MIN_CAMPAIGNS:
+        st.info(f"{n} campagne(s) dans le dataset : il en faut au moins {MIN_CAMPAIGNS} pour entraîner et tester.")
+        return
+    grid = st.checkbox("Recherche des meilleurs réglages (plus long, plus précis)", value=False)
+    if st.button("🧠 Entraîner le modèle sur cette ferme"):
+        with st.spinner("Entraînement en cours…"):
+            try:
+                model, _, prefix = train_farm_model(farm, dataset_path, grid_search=grid)
+            except Exception as e:
+                st.error(f"Entraînement impossible : {e}")
+                return
+        st.session_state[f"modele_{farm.id}"] = (prefix, model.metadata.get("test_metrics", {}))
+    trained = st.session_state.get(f"modele_{farm.id}")
+    if trained:
+        prefix, m = trained
+        c = st.columns(4)
+        c[0].metric("Exactitude (test)", f"{m.get('accuracy', 0):.0%}")
+        c[1].metric("F1 pondéré", f"{m.get('f1_weighted', 0):.2f}")
+        auc = m.get("roc_auc_ovr_weighted")
+        c[2].metric("ROC-AUC", f"{auc:.2f}" if auc is not None else "—")
+        c[3].metric("Échantillons de test", m.get("samples", 0))
+        st.caption("Le test porte sur des campagnes jamais vues pendant l'entraînement.")
+        st.download_button("⬇️ Télécharger le modèle (zip)", _model_zip(prefix), f"hydrostress_{farm.id}.zip",
+                           help="Envoyez ce fichier pour qu'il devienne le modèle de l'application.")
 
 
 def render_farm_training():
@@ -177,3 +246,8 @@ def render_farm_training():
     if climate is not None and (irrigation is not None or farm.irrigation == "pluvial"):
         st.markdown("**3. Bilan hydrique et étiquettes**")
         _balance_step(farm, climate, irrigation)
+        st.markdown("**4. Données satellite (Earth Engine)**")
+        dataset_path = _dataset_step(farm, climate, irrigation)
+        if dataset_path is not None:
+            st.markdown("**5. Entraînement du modèle**")
+            _train_step(farm, dataset_path)
