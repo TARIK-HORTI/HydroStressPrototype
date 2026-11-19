@@ -204,7 +204,7 @@ def build_map(center, zoom):
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri World Imagery", name="Satellite",
     ).add_to(m)
-    folium.TileLayer("OpenStreetMap", name="Plan").add_to(m)
+    folium.TileLayer("OpenStreetMap", name="Plan", show=False).add_to(m)   # Satellite reste la vue par défaut
     # Noms des villes, villages et frontières par-dessus l'image satellite (affichés par défaut)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
