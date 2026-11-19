@@ -48,3 +48,8 @@ data/
 
 # Secrets Streamlit locaux
 .streamlit/secrets.toml
+
+# Fermes (positions) et modèles par ferme : données privées
+farms/
+models/*_pipeline.joblib
+!models/hydrostress_pipeline.joblib

@@ -43,6 +43,12 @@ HydroStressPrototype/
 ├── region.py                  # Maroc : emprise, 9 zones agricoles, localités, cultures, normales
 ├── extract_data.py            # Extraction Sentinel-2, CHIRPS, ERA5-Land + authentification Earth Engine
 ├── build_dataset.py           # Dataset réel : features + étiquettes VHI (MODIS) dans toutes les zones
+├── farm.py                    # Ferme : position, culture, écartement, sol, irrigation, Kc corrigé
+├── climate_history.py         # Climat quotidien Open-Meteo / NASA POWER + features météo
+├── irrigation_register.py     # Lecture des registres d'irrigation Excel
+├── water_balance.py           # Bilan hydrique FAO-56 -> Ks -> classe de stress
+├── farm_dataset.py            # Entraînement sur une ferme réelle (CLI en 6 étapes)
+├── farm_ui.py                 # Section Streamlit « Entraîner sur ma ferme »
 ├── stations.py                # Validation par les stations météo NOAA GSOD
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
@@ -133,6 +139,24 @@ Si le CSV contient une colonne `parcel_id`, le découpage train/val/test et la v
 #### Étiquettes VHI (`build_dataset.py`)
 
 Le Vegetation Health Index (Kogan) compare le NDVI (MODIS MOD13Q1) et la température de surface (MODIS MOD11A2) à l'historique 2001+ du même pixel à la même période : `VHI = 0.5·VCI + 0.5·TCI`. Classes : VHI ≥ 40 → Normal, 20–40 → Modéré, < 20 → Sévère. C'est une étiquette indirecte : des observations de terrain (ORMVA du Tafilalet, agriculteurs) restent la référence pour valider le modèle.
+
+#### Données réelles d'une ferme (`farm_dataset.py`)
+
+Les registres d'irrigation d'une ferme donnent une étiquette plus directe que le VHI : un **bilan hydrique FAO-56** jour par jour (climat téléchargé + apports réels) calcule le coefficient de stress **Ks** de la culture (1 = aucune contrainte). Moyenne de Ks sur 10 jours : ≥ 0,85 → Normal, 0,60–0,85 → Modéré, < 0,60 → Sévère (seuils réglables avec `--ks-thresholds`).
+
+La ferme se décrit une fois : position, culture, **écartement** (densité et couverture du sol, qui corrigent le Kc d'un verger jeune ou peu dense), surface, année de plantation, sol et système d'irrigation. Le climat quotidien est téléchargé sans compte depuis **Open-Meteo** (ERA5-Land, ET0 Penman-Monteith) ou **NASA POWER**.
+
+```bash
+python farm_dataset.py init --name "Bloc 4" --lat 31.887705 --lon -4.155879 \
+    --crop amandier --spacing 7x5 --area-ha 102 --planting-year 2018 --irrigation goutte --soil sableux
+python farm_dataset.py climate farms/bloc-4.json --start 2018-01-01 --end 2025-12-31
+python farm_dataset.py irrigation farms/bloc-4.json registres/*.xlsx   # un fichier Excel par campagne
+python farm_dataset.py balance farms/bloc-4.json      # bilan + étiquettes, sans Earth Engine
+python farm_dataset.py build farms/bloc-4.json        # + Sentinel-2 (Earth Engine) -> data/bloc-4/dataset.csv
+python farm_dataset.py train farms/bloc-4.json        # découpage par campagne agricole
+```
+
+Les mêmes étapes, sauf `build` et `train`, sont disponibles dans l'application (section **🌴 Entraîner sur ma ferme**). La lecture des registres (`irrigation_register.py`) s'adapte aux mises en page qui changent d'une campagne à l'autre (colonne `m3`, différence de compteur `dif /m3` ou `m3/ha`), corrige les années mal saisies et signale les mois sans aucun apport : une longue période vide est traitée comme un registre manquant et n'est pas étiquetée.
 
 ### 4. Tests
 
