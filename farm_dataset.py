@@ -32,7 +32,7 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -189,7 +189,16 @@ def cmd_balance(args) -> pd.DataFrame:
     return labels
 
 
-def cmd_build(args) -> pd.DataFrame:
+def build_dataset(farm: Farm, climate: pd.DataFrame, irrigation: Optional[pd.DataFrame], out: Path,
+                  every_days: int = 10, lookback_days: int = 30, ks_thresholds=(0.60, 0.85),
+                  start: Optional[str] = None, end: Optional[str] = None, resume: bool = True,
+                  progress: Optional[Callable[[int, int, str], None]] = None) -> Tuple[pd.DataFrame, int]:
+    """Extrait les 26 features (Sentinel-2 via Earth Engine + climat) pour chaque date étiquetée.
+
+    Le fichier ``out`` est réécrit toutes les 10 dates : si l'extraction s'arrête (coupure, délai dépassé),
+    ``resume=True`` reprend là où elle s'était arrêtée. ``progress(i, total, message)`` suit l'avancement.
+    Renvoie (dataset, nombre de dates sans image exploitable).
+    """
     import ee
 
     from climate_history import weather_features
@@ -197,11 +206,20 @@ def cmd_build(args) -> pd.DataFrame:
     from irrigation_register import campaign_of
     from water_balance import label_at, run_water_balance
 
-    farm = Farm.load(args.farm)
-    climate, irrigation = load_inputs(farm)
     balance = run_water_balance(climate, irrigation, farm)
-    dates = labelled_dates(balance, irrigation, args.every_days, args.start, args.end)
+    dates = labelled_dates(balance, irrigation, every_days, start, end)
     logger.info(f"{len(dates)} dates à extraire")
+
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rows, done = [], set()
+    if resume and out.exists():
+        previous = pd.read_csv(out)
+        if not previous.empty and "date" in previous.columns:
+            rows = previous.to_dict("records")
+            done = set(previous["date"].astype(str))
+            logger.info(f"Reprise : {len(done)} dates déjà extraites")
+    todo = [d for d in dates if d.strftime("%Y-%m-%d") not in done]
 
     pipeline = DataPipeline()
     coords = farm.parcel_coordinates()
@@ -209,58 +227,86 @@ def cmd_build(args) -> pd.DataFrame:
     site = get_site_features(geometry.centroid(maxError=1))
     zone_id = farm.zone[0]
 
-    out = Path(args.output) if args.output else data_dir(farm) / "dataset.csv"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    rows, skipped = [], 0
-    for i, d in enumerate(dates, 1):
+    skipped = 0
+    chirps_keys = ("precipitation_total_30j", "precipitation_total_7j", "precipitation_mean",
+                   "max_consecutive_dry_days", "rainy_days_count")
+    for i, d in enumerate(todo, 1):
         try:
-            stats, n_img, valid, window = pipeline.extract_sentinel(geometry, d.to_pydatetime(), args.lookback_days)
+            stats, n_img, valid, window = pipeline.extract_sentinel(geometry, d.to_pydatetime(), lookback_days)
             weather = weather_features(climate, d)
         except (DataUnavailableError, ee.EEException) as e:
             skipped += 1
             logger.warning(f"{d:%Y-%m-%d} ignoré : {e}")
+            if progress:
+                progress(i, len(todo), f"{d:%Y-%m-%d} sans image exploitable")
             continue
-        chirps_keys = ("precipitation_total_30j", "precipitation_total_7j", "precipitation_mean",
-                       "max_consecutive_dry_days", "rainy_days_count")
         features = assemble_features(stats, {k: weather[k] for k in chirps_keys},
                                      {k: v for k, v in weather.items() if k not in chirps_keys},
                                      d.to_pydatetime(), site)
-        label, ks = label_at(balance, d, thresholds=args.ks_thresholds)
+        label, ks = label_at(balance, d, thresholds=ks_thresholds)
         rows.append({**features, "stress_class": label, "ks": ks, "zone": zone_id, "crop": farm.crop,
                      "parcel_id": farm.id, "campagne": campaign_of(d), "date": d.strftime("%Y-%m-%d"),
                      "s2_images": n_img, "label_source": LABEL_SOURCE})
         if i % 10 == 0:
             pd.DataFrame(rows).to_csv(out, index=False)
-            logger.info(f"{i}/{len(dates)} dates traitées")
+            logger.info(f"{i}/{len(todo)} dates traitées")
+        if progress:
+            progress(i, len(todo), f"{d:%Y-%m-%d} extrait")
     df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("date").reset_index(drop=True)
     df.to_csv(out, index=False)
+    return df, skipped
+
+
+def cmd_build(args) -> pd.DataFrame:
+    farm = Farm.load(args.farm)
+    climate, irrigation = load_inputs(farm)
+    out = Path(args.output) if args.output else data_dir(farm) / "dataset.csv"
+    df, skipped = build_dataset(farm, climate, irrigation, out, every_days=args.every_days,
+                                lookback_days=args.lookback_days, ks_thresholds=args.ks_thresholds,
+                                start=args.start, end=args.end, resume=not args.restart)
     print(f"✓ {len(df)} échantillons dans {out} ({skipped} dates sans image Sentinel-2 exploitable)")
     if not df.empty:
         print(df.groupby("campagne")["stress_class"].value_counts().unstack(fill_value=0).to_string())
     return df
 
 
-def cmd_train(args):
+MIN_CAMPAIGNS = 4
+
+
+def train_farm_model(farm: Farm, data: Path, extra: Optional[List[str]] = None, output: Optional[str] = None,
+                     grid_search: bool = True):
+    """Entraîne le modèle sur le dataset de la ferme (split par campagne). Renvoie (modèle, résultats, préfixe)."""
     from train_model import train_production_model
 
-    farm = Farm.load(args.farm)
-    data = Path(args.data) if args.data else data_dir(farm) / "dataset.csv"
+    data = Path(data)
     df = pd.read_csv(data)
-    if args.extra:
-        extras = [pd.read_csv(p) for p in args.extra]
-        df = pd.concat([df] + extras, ignore_index=True)
+    if extra:
+        df = pd.concat([df] + [pd.read_csv(p) for p in extra], ignore_index=True)
         if "campagne" in df.columns:
             df["campagne"] = df["campagne"].fillna(df.get("parcel_id", "autre"))
     n_groups = df["campagne"].nunique()
-    if n_groups < 4:
-        raise SystemExit(f"Seulement {n_groups} campagne(s) : il en faut au moins 4 pour séparer entraînement et test.")
+    if n_groups < MIN_CAMPAIGNS:
+        raise ValueError(f"Seulement {n_groups} campagne(s) : il en faut au moins {MIN_CAMPAIGNS} "
+                         "pour séparer entraînement et test.")
     combined = data.with_name("dataset_entrainement.csv")
     df.to_csv(combined, index=False)
-    output = args.output or f"models/{farm.id}"
+    output = output or f"models/{farm.id}"
     model, results = train_production_model(
-        str(combined), output_path=output, use_grid_search=not args.no_grid_search,
+        str(combined), output_path=output, use_grid_search=grid_search,
         data_source=f"terrain:{farm.id}", group_column="campagne",
     )
+    return model, results, output
+
+
+def cmd_train(args):
+    farm = Farm.load(args.farm)
+    data = Path(args.data) if args.data else data_dir(farm) / "dataset.csv"
+    try:
+        model, results, output = train_farm_model(farm, data, args.extra, args.output, not args.no_grid_search)
+    except ValueError as e:
+        raise SystemExit(str(e))
     print(f"\n✓ Modèle : {output}_pipeline.joblib")
     print("  Pour l'utiliser dans l'application : copiez-le en models/hydrostress_pipeline.joblib "
           "et models/hydrostress_metadata.json (gardez une copie de l'ancien).")
@@ -318,6 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--end")
             p.add_argument("--lookback-days", type=int, default=30)
             p.add_argument("--output")
+            p.add_argument("--restart", action="store_true", help="Recommencer au lieu de reprendre le fichier existant")
         p.set_defaults(func=func)
 
     p = sub.add_parser("train", help="Entraîner le modèle sur le dataset de la ferme")

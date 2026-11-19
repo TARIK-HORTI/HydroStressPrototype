@@ -278,3 +278,57 @@ def test_cli_end_to_end_with_mocked_earth_engine(tmp_path, monkeypatch, capsys):
     assert not ds[FEATURE_COLUMNS].isna().any().any()
     assert ds["campagne"].nunique() >= 5
     assert (ds["stress_class"] == labels.set_index("date").loc[ds["date"], "stress_class"].values).all()
+
+
+def _fake_earth_engine(monkeypatch, calls):
+    import extract_data
+
+    class FakeGeometry:
+        def centroid(self, maxError=1):
+            return self
+
+    class FakePipeline:
+        def __init__(self):
+            self.sentinel = type("S", (), {"create_geometry": staticmethod(lambda c: FakeGeometry())})()
+
+        def extract_sentinel(self, geometry, end_dt, lookback):
+            calls.append(end_dt)
+            stats = {k: {"mean": 0.3, "min": 0.1, "max": 0.5, "stdDev": 0.05} for k in ("NDVI", "NDWI", "MSI", "SAVI", "EVI")}
+            return stats, 3, 0.9, 30
+
+    monkeypatch.setattr(extract_data, "DataPipeline", FakePipeline)
+    monkeypatch.setattr(extract_data, "get_site_features",
+                        lambda g: {"elevation_m": 1050.0, "precip_annual_normal_mm": 110.0})
+
+
+def test_build_dataset_resumes_and_reports_progress(tmp_path, monkeypatch):
+    calls = []
+    _fake_earth_engine(monkeypatch, calls)
+    farm = make_farm()
+    days = pd.date_range("2018-01-01", "2024-12-31")
+    irrigation = pd.DataFrame({"date": days, "irrigation_m3": 6.0 * 1020, "irrigation_mm": 6.0})
+    out = tmp_path / "dataset.csv"
+    seen = []
+    df, skipped = farm_dataset.build_dataset(farm, synthetic_climate(), irrigation, out, every_days=30,
+                                             progress=lambda i, n, msg: seen.append((i, n)))
+    assert len(df) == len(calls) > 0 and skipped == 0
+    assert seen[-1][0] == seen[-1][1] == len(calls)
+    # Arrêt simulé : on retire la moitié des lignes, la reprise ne refait que celles-ci
+    half = df.iloc[: len(df) // 2]
+    half.to_csv(out, index=False)
+    calls.clear()
+    df2, _ = farm_dataset.build_dataset(farm, synthetic_climate(), irrigation, out, every_days=30)
+    assert len(calls) == len(df) - len(half)
+    assert list(df2["date"]) == list(df["date"])
+    # « Recommencer » refait tout
+    calls.clear()
+    farm_dataset.build_dataset(farm, synthetic_climate(), irrigation, out, every_days=30, resume=False)
+    assert len(calls) == len(df)
+
+
+def test_train_farm_model_needs_four_campaigns(tmp_path):
+    farm = make_farm()
+    data = tmp_path / "dataset.csv"
+    pd.DataFrame({"campagne": ["2019/2020", "2020/2021", "2021/2022"] * 4, "stress_class": [0, 1, 2] * 4}).to_csv(data, index=False)
+    with pytest.raises(ValueError, match="au moins 4"):
+        farm_dataset.train_farm_model(farm, data)

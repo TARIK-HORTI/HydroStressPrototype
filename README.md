@@ -47,7 +47,7 @@ HydroStressPrototype/
 ├── climate_history.py         # Climat quotidien Open-Meteo / NASA POWER + features météo
 ├── irrigation_register.py     # Lecture des registres d'irrigation Excel
 ├── water_balance.py           # Bilan hydrique FAO-56 -> Ks -> classe de stress
-├── farm_dataset.py            # Entraînement sur une ferme réelle (CLI en 6 étapes)
+├── farm_dataset.py            # Entraînement sur une ferme réelle (CLI en 6 étapes, fonctions réutilisées par l'app)
 ├── farm_ui.py                 # Section Streamlit « Entraîner sur ma ferme »
 ├── stations.py                # Validation par les stations météo NOAA GSOD
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
@@ -156,7 +156,7 @@ python farm_dataset.py build farms/bloc-4.json        # + Sentinel-2 (Earth Engi
 python farm_dataset.py train farms/bloc-4.json        # découpage par campagne agricole
 ```
 
-Les mêmes étapes, sauf `build` et `train`, sont disponibles dans l'application (section **🌴 Entraîner sur ma ferme**). La lecture des registres (`irrigation_register.py`) s'adapte aux mises en page qui changent d'une campagne à l'autre (colonne `m3`, différence de compteur `dif /m3` ou `m3/ha`), corrige les années mal saisies et signale les mois sans aucun apport : une longue période vide est traitée comme un registre manquant et n'est pas étiquetée.
+Toutes les étapes, y compris le dataset satellite et l'entraînement, sont disponibles dans l'application (section **🌴 Entraîner sur ma ferme**), qui utilise le compte Earth Engine configuré dans les *Secrets* : aucun Python n'est nécessaire sur votre PC. L'extraction satellite **reprend là où elle s'est arrêtée** si la page est fermée (`build --restart` pour tout refaire en ligne de commande). Après l'entraînement, le bouton « Télécharger le modèle » donne un zip (`hydrostress_pipeline.joblib` + `hydrostress_metadata.json`) à placer dans `models/` pour qu'il devienne le modèle de l'application. La lecture des registres (`irrigation_register.py`) s'adapte aux mises en page qui changent d'une campagne à l'autre (colonne `m3`, différence de compteur `dif /m3` ou `m3/ha`), corrige les années mal saisies et signale les mois sans aucun apport : une longue période vide est traitée comme un registre manquant et n'est pas étiquetée.
 
 ### 4. Tests
 
