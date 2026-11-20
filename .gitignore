@@ -1,0 +1,56 @@
+# Environnement virtuel
+.venv/
+venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Variables d'environnement
+.env
+
+# Logs
+*.log
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Sorties Python
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Modèles temporaires
+models/*.pkl
+
+
+# Résultats temporaires
+outputs/
+
+str-hyd.json
+
+test_ee.py
+
+predictions_log.jsonl
+# Datasets réels générés par build_dataset.py
+data/
+.pytest_cache/
+
+# Secrets Streamlit locaux
+.streamlit/secrets.toml
+
+# Fermes (positions) et modèles par ferme : données privées
+farms/
+models/*_pipeline.joblib
+!models/hydrostress_pipeline.joblib
+contributions/
