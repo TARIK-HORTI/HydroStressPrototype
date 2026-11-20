@@ -248,7 +248,18 @@ class HydroStressModel:
         # 1. GridSearchCV (si activé)
         # -------------------------------------------------------------------
         if use_grid_search:
-            logger.info("GridSearchCV en cours...")
+            # Petits jeux de données (une ferme, quelques campagnes) : pas plus de folds que de groupes
+            # ni que d'exemples dans la classe la plus rare.
+            folds = min(cv_folds, int(y_train.value_counts().min()))
+            if groups_train is not None:
+                folds = min(folds, int(groups_train.nunique()))
+            if folds < 2:
+                logger.warning("Trop peu de données pour la recherche d'hyperparamètres : réglages par défaut.")
+                use_grid_search = False
+            else:
+                cv_folds = folds
+        if use_grid_search:
+            logger.info(f"GridSearchCV en cours ({cv_folds} folds)...")
             base_pipe = self._build_pipeline()
 
             if groups_train is not None:
@@ -304,15 +315,20 @@ class HydroStressModel:
         # hyperparamètres) sur 4/5 des données et calibre chacune sur le 1/5
         # restant : les probabilités ne sont jamais calibrées sur les données
         # ayant servi à ajuster les arbres.
-        logger.info("Calibration des probabilités (sigmoïde, cv=5)...")
-        calibrated = CalibratedClassifierCV(
-            estimator=self._build_pipeline(rf_kwargs),
-            method="sigmoid",
-            cv=5,
-        )
-        calibrated.fit(X_combined, y_combined)
-
-        self.pipeline = calibrated
+        calib_folds = min(5, int(y_combined.value_counts().min()))
+        if calib_folds >= 2:
+            logger.info(f"Calibration des probabilités (sigmoïde, cv={calib_folds})...")
+            calibrated = CalibratedClassifierCV(
+                estimator=self._build_pipeline(rf_kwargs),
+                method="sigmoid",
+                cv=calib_folds,
+            )
+            calibrated.fit(X_combined, y_combined)
+            self.pipeline = calibrated
+        else:
+            logger.warning("Une classe a moins de 2 exemples : modèle entraîné sans calibration des probabilités.")
+            self.pipeline = self._build_pipeline(rf_kwargs).fit(X_combined, y_combined)
+        self.metadata["calibration_folds"] = calib_folds if calib_folds >= 2 else None
         self.is_trained = True
 
         # Métadonnées
@@ -374,6 +390,7 @@ class HydroStressModel:
         # Rapport
         report = classification_report(
             y_test, y_pred,
+            labels=[0, 1, 2],
             target_names=["Normal", "Modéré", "Sévère"],
             zero_division=0,
             output_dict=True
@@ -487,6 +504,35 @@ class HydroStressModel:
 # ---------------------------------------------------------------------------
 # Fonction d'entraînement de production
 # ---------------------------------------------------------------------------
+def grouped_split(df: pd.DataFrame, groups: pd.Series, val_size: float, test_size: float,
+                  tries: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Découpage train / val / test par groupe (parcelle ou campagne), sans fuite entre les parties.
+
+    Avec peu de groupes (une seule ferme, 5 à 8 campagnes), un tirage au hasard peut laisser une classe
+    presque absente de l'entraînement. On essaie plusieurs tirages et on garde celui qui donne le plus
+    d'exemples de la classe la plus rare à l'entraînement, avec au moins 2 classes dans le test.
+    """
+    y = df[LABEL_COLUMN].to_numpy()
+    classes = np.unique(y)
+    best, best_score = None, None
+    for seed in range(42, 42 + tries):
+        outer = GroupShuffleSplit(n_splits=1, test_size=val_size + test_size, random_state=seed)
+        train_idx, rest_idx = next(outer.split(df, y, groups))
+        rest_groups = groups.iloc[rest_idx]
+        if rest_groups.nunique() < 2:
+            continue
+        inner = GroupShuffleSplit(n_splits=1, test_size=test_size / (val_size + test_size), random_state=seed)
+        v, t = next(inner.split(rest_idx, y[rest_idx], rest_groups))
+        val_idx, test_idx = rest_idx[v], rest_idx[t]
+        train_counts = [int((y[train_idx] == c).sum()) for c in classes]
+        score = (len(np.unique(y[test_idx])) >= 2, min(train_counts), len(np.unique(y[test_idx])), -seed)
+        if best_score is None or score > best_score:
+            best, best_score = (train_idx, val_idx, test_idx), score
+    if best is None:
+        raise ValueError("Pas assez de groupes (parcelles ou campagnes) pour séparer entraînement, validation et test.")
+    return best
+
+
 def train_production_model(
     data_file: str,
     output_path: str = "models/hydrostress",
@@ -530,12 +576,9 @@ def train_production_model(
     if groups is not None:
         # Split par parcelle : évite qu'une parcelle soit vue en train et en test
         logger.info(f"Split groupé par '{group_column}' ({groups.nunique()} parcelles)")
-        outer = GroupShuffleSplit(n_splits=1, test_size=val_size + test_size, random_state=42)
-        train_idx, rest_idx = next(outer.split(df, y_full, groups))
-        rest = df.iloc[rest_idx]
-        inner = GroupShuffleSplit(n_splits=1, test_size=test_size / (val_size + test_size), random_state=42)
-        val_idx, test_idx = next(inner.split(rest, rest[LABEL_COLUMN], rest[group_column]))
-        X_train_full, X_val, X_test = df.iloc[train_idx], rest.iloc[val_idx], rest.iloc[test_idx]
+        train_idx, val_idx, test_idx = grouped_split(df, groups, val_size, test_size)
+        rest = df
+        X_train_full, X_val, X_test = df.iloc[train_idx], df.iloc[val_idx], df.iloc[test_idx]
         y_train_full, y_val, y_test = (part[LABEL_COLUMN] for part in (X_train_full, X_val, X_test))
     else:
         X_train_full, X_val_test, y_train_full, y_val_test = train_test_split(

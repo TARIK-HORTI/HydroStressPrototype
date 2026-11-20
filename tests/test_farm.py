@@ -332,3 +332,40 @@ def test_train_farm_model_needs_four_campaigns(tmp_path):
     pd.DataFrame({"campagne": ["2019/2020", "2020/2021", "2021/2022"] * 4, "stress_class": [0, 1, 2] * 4}).to_csv(data, index=False)
     with pytest.raises(ValueError, match="au moins 4"):
         farm_dataset.train_farm_model(farm, data)
+
+
+def _farm_like_dataset():
+    """Une ferme, 7 campagnes, stress sévère concentré sur quelques années (comme le bloc 4)."""
+    dist = {"2018/2019": (0, 6, 17), "2019/2020": (7, 13, 16), "2020/2021": (25, 12, 0), "2021/2022": (22, 12, 2),
+            "2022/2023": (16, 21, 0), "2023/2024": (11, 5, 2), "2024/2025": (1, 0, 0)}
+    rng = np.random.default_rng(0)
+    rows = []
+    for camp, counts in dist.items():
+        for cls, n in enumerate(counts):
+            for _ in range(n):
+                f = {c: rng.normal(0, 1) for c in FEATURE_COLUMNS}
+                f[FEATURE_COLUMNS[0]] += cls * 1.5
+                rows.append({**f, "stress_class": cls, "campagne": camp})
+    return pd.DataFrame(rows)
+
+
+def test_grouped_split_keeps_every_class_in_training():
+    from train_model import grouped_split
+
+    df = _farm_like_dataset()
+    tr, va, te = grouped_split(df, df["campagne"], 0.15, 0.15)
+    parts = [set(df.iloc[i]["campagne"]) for i in (tr, va, te)]
+    assert not (parts[0] & parts[1] or parts[0] & parts[2] or parts[1] & parts[2])
+    assert set(df.iloc[tr]["stress_class"]) == {0, 1, 2}
+    assert df.iloc[te]["stress_class"].nunique() >= 2
+
+
+def test_training_works_on_a_single_farm(tmp_path):
+    from train_model import train_production_model
+
+    data = tmp_path / "ds.csv"
+    _farm_like_dataset().to_csv(data, index=False)
+    model, _ = train_production_model(str(data), output_path=str(tmp_path / "m"), use_grid_search=False,
+                                      group_column="campagne")
+    assert model.is_trained and (tmp_path / "m_pipeline.joblib").exists()
+    assert model.metadata["test_metrics"]["samples"] > 0
