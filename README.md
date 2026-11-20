@@ -273,7 +273,7 @@ gcloud storage buckets add-iam-policy-binding gs://<nom-du-bucket> \
 ```
 
 Puis, dans les *Secrets* Streamlit : `CONTRIB_BUCKET = "<nom-du-bucket>"`. Sans ce réglage, les envois vont
-dans un dossier local `contributions/`, effacé au redémarrage de Streamlit Cloud (développement uniquement).
+n'est pas proposé (message « ouvre très bientôt ») ; en local, `CONTRIB_ALLOW_LOCAL=1` les range dans `contributions/`.
 
 **Entraîner avec une contribution** : téléchargez le dossier (`gcloud storage cp -r gs://<bucket>/contributions/<dossier> .`),
 puis suivez les étapes de `farm_dataset.py` avec la position, la culture et les registres reçus

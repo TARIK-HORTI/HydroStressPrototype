@@ -5,6 +5,7 @@ Section Streamlit « 🤝 Aidez-nous à améliorer le modèle » : envoi des don
 d'une ferme (registres d'irrigation, description, contact) pour l'entraînement.
 """
 
+import os
 from datetime import date
 
 import streamlit as st
@@ -30,6 +31,10 @@ def render_contribution():
         )
 
     storage = get_storage()
+    if not storage.durable and os.environ.get("CONTRIB_ALLOW_LOCAL") != "1":
+        # Sans bucket, les fichiers seraient perdus au prochain redémarrage : on n'accepte pas d'envoi.
+        st.info("📬 L'envoi de données ouvre très bientôt. En attendant, contactez-nous pour partager vos registres.")
+        return
     with st.form("contribution", clear_on_submit=False):
         st.markdown("**1. Vous**")
         c1, c2, c3 = st.columns(3)
