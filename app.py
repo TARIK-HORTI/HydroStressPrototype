@@ -27,6 +27,7 @@ from streamlit_folium import st_folium
 
 from demo import make_demo_extraction
 from farm_ui import render_farm_training
+from contrib_ui import render_contribution
 from extract_data import (
     DataPipeline,
     DataUnavailableError,
@@ -155,6 +156,16 @@ init_state()
 # ---------------------------------------------------------------------------
 # Composants
 # ---------------------------------------------------------------------------
+def model_origin(meta) -> str:
+    """Libellé lisible de l'origine du modèle (ex. « Bloc 4 · Amandier · Errachidia »)."""
+    src = str(meta.get("data_source", ""))
+    if src == "synthetic":
+        return "Synthétiques"
+    if src.startswith("terrain:"):
+        return meta.get("origin_label") or f"ferme {src.split(':', 1)[1]}"
+    return src or "—"
+
+
 def hero(predictor):
     meta = getattr(predictor, "metadata", None) or {}
     synthetic = meta.get("data_source") == "synthetic"
@@ -165,6 +176,8 @@ def hero(predictor):
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
         chips_html += "<span class='hs-chip warn'>Modèle de démonstration (données synthétiques)</span>"
+    elif str(meta.get("data_source", "")).startswith("terrain:"):
+        chips_html += f"<span class='hs-chip'>🌱 Modèle entraîné sur données réelles · {model_origin(meta)}</span>"
     beta_badge = "<span class='hs-beta'>BÊTA</span>" if IS_BETA else ""
     by = f"{BRAND} · " if BRAND else ""
     beta_bar = (
@@ -490,7 +503,7 @@ def render_model_section(predictor):
     metrics = meta.get("test_metrics") or {}
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        kpi("Source des données", {"synthetic": "Synthétiques"}.get(meta.get("data_source"), meta.get("data_source", "—")))
+        kpi("Source des données", model_origin(meta))
     with c2:
         kpi("Échantillons", meta.get("training_samples", "—"))
     with c3:
@@ -501,6 +514,13 @@ def render_model_section(predictor):
         st.caption(
             "Le modèle actuel est entraîné sur des données synthétiques calées sur les climats des zones agricoles du Maroc. "
             "Il sera remplacé par un modèle entraîné sur des données réelles (build_dataset.py)."
+        )
+    elif str(meta.get("data_source", "")).startswith("terrain:"):
+        st.caption(
+            f"Modèle entraîné sur les registres d'irrigation réels de : {model_origin(meta)}. Le stress de chaque date "
+            "vient d'un bilan hydrique FAO-56 (climat + apports réels) ; le test porte sur des campagnes jamais vues. "
+            "Pour d'autres régions et cultures, les résultats restent indicatifs : partagez vos données "
+            "(section « 🤝 Aidez-nous à améliorer le modèle ») pour l'élargir."
         )
 
 
@@ -661,6 +681,8 @@ def main():
         render_report(st.session_state.result)
 
     st.divider()
+    with st.expander("🤝 Aidez-nous à améliorer le modèle : partagez vos données"):
+        render_contribution()
     with st.expander("🤖 À propos du modèle"):
         render_model_section(predictor)
     with st.expander("🎛️ Simulation manuelle (sans satellite)"):

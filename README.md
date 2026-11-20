@@ -49,6 +49,7 @@ HydroStressPrototype/
 ├── water_balance.py           # Bilan hydrique FAO-56 -> Ks -> classe de stress
 ├── farm_dataset.py            # Entraînement sur une ferme réelle (CLI en 6 étapes, fonctions réutilisées par l'app)
 ├── farm_ui.py                 # Section Streamlit « Entraîner sur ma ferme »
+├── contrib.py / contrib_ui.py  # Contributions de données des agriculteurs (bucket GCS)
 ├── stations.py                # Validation par les stations météo NOAA GSOD
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
@@ -253,6 +254,31 @@ Les réflectances Sentinel-2 L2A sont converties en [0, 1] (÷ 10 000) avant le 
 - **Features** : 26 (indices spectraux, CHIRPS, ERA5-Land, saison, altitude, normale de pluie)
 
 ---
+
+## 🤝 Contributions de données (section « Aidez-nous à améliorer le modèle »)
+
+Les agriculteurs envoient depuis l'application la description de leur parcelle, leurs registres d'irrigation
+(et, s'ils en ont, observations de stress, rendements, analyses de sol, limites de parcelle), avec un contact et
+leur accord écrit. Chaque envoi reçoit une référence et est rangé dans
+`contributions/<date>_<parcelle>_<référence>/` (`contribution.json` + `fichiers/registres/…`, `fichiers/autres/…`).
+Le nom et la position des fermes ne sont jamais publiés.
+
+**Stockage durable (obligatoire sur Streamlit Cloud)** : un bucket Google Cloud Storage, avec le compte de service
+déjà utilisé pour Earth Engine.
+
+```bash
+gcloud storage buckets create gs://<nom-du-bucket> --location=europe-west1 --uniform-bucket-level-access
+gcloud storage buckets add-iam-policy-binding gs://<nom-du-bucket> \
+  --member=serviceAccount:<email-du-compte-de-service> --role=roles/storage.objectCreator
+```
+
+Puis, dans les *Secrets* Streamlit : `CONTRIB_BUCKET = "<nom-du-bucket>"`. Sans ce réglage, les envois vont
+dans un dossier local `contributions/`, effacé au redémarrage de Streamlit Cloud (développement uniquement).
+
+**Entraîner avec une contribution** : téléchargez le dossier (`gcloud storage cp -r gs://<bucket>/contributions/<dossier> .`),
+puis suivez les étapes de `farm_dataset.py` avec la position, la culture et les registres reçus
+(`init` → `climate` → `irrigation` → `balance` → `build` → `train`, avec `--extra` pour ajouter les datasets des
+autres fermes), ou passez par la section « 🌴 Entraîner sur ma ferme ».
 
 ## 🌐 Déploiement sur votre propre domaine (ex. hydrostress.wahatech.ma)
 

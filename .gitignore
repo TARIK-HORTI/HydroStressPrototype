@@ -53,3 +53,4 @@ data/
 farms/
 models/*_pipeline.joblib
 !models/hydrostress_pipeline.joblib
+contributions/
