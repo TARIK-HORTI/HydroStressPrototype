@@ -186,7 +186,7 @@ def hero(predictor):
     if synthetic:
         chips_html += "<span class='hs-chip warn'>Modèle de démonstration (données synthétiques)</span>"
     elif str(meta.get("data_source", "")).startswith("terrain:"):
-        chips_html += f"<span class='hs-chip'>🌱 Modèle entraîné sur données réelles · {model_origin(meta)}</span>"
+        chips_html += f"<span class='hs-chip'>🌱 Modèle entraîné sur des données réelles de {model_origin(meta)}</span>"
     beta_badge = "<span class='hs-beta'>BÊTA</span>" if IS_BETA else ""
     by = f"{BRAND} · " if BRAND else ""
     beta_bar = (
@@ -512,7 +512,8 @@ def render_model_section(predictor):
     metrics = meta.get("test_metrics") or {}
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        kpi("Source des données", model_origin(meta))
+        origin = model_origin(meta)
+        kpi("Source des données", origin[:1].upper() + origin[1:])
     with c2:
         kpi("Échantillons", meta.get("training_samples", "—"))
     with c3:
@@ -526,7 +527,9 @@ def render_model_section(predictor):
         )
     elif str(meta.get("data_source", "")).startswith("terrain:"):
         st.caption(
-            f"Modèle entraîné sur les registres d'irrigation réels de : {model_origin(meta)}. Le stress de chaque date "
+            f"Modèle entraîné sur des données réelles de {model_origin(meta)}"
+            + (f" ({meta['origin_details']})" if meta.get("origin_details") else "")
+            + " : registres d'irrigation et images satellite. Le stress de chaque date "
             "vient d'un bilan hydrique FAO-56 (climat + apports réels) ; le test porte sur des campagnes jamais vues. "
             "Pour d'autres régions et cultures, les résultats restent indicatifs : partagez vos données "
             "(section « 🤝 Aidez-nous à améliorer le modèle ») pour l'élargir."

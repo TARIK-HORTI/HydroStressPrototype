@@ -269,7 +269,7 @@ de Sentinel-2 et du climat. Random Forest (400 arbres, profondeur 8, au moins 12
 | Ancien modèle synthétique (`models/synthetique/`) | 28 % | 0,24 | 76 % |
 | Meilleur mélange synthétique + réel | 61 % | 0,59 | 57 % |
 | Réel seul, anciens réglages | 71 % | 0,70 | 84 % |
-| **Réel seul, modèle livré** | **74 %** | **0,74** | **86,5 %** (précision 73 %) |
+| **Réel seul, modèle livré** (« Modèle entraîné sur des données réelles de ferme d'amandiers à Errachidia ») | **74 %** | **0,74** | **86,5 %** (précision 73 %) |
 
 Les données synthétiques ne ressemblent pas aux mesures réelles : les mélanger fait baisser les résultats. Le
 modèle progressera avec les registres d'autres fermes (section « 🤝 Aidez-nous à améliorer le modèle ») ;

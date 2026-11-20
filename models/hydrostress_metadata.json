@@ -102,7 +102,7 @@
     ],
     "evaluation": "Validation croisée par campagne (leave-one-campaign-out) sur 6 campagnes réelles du bloc 4 : chaque campagne est testée par un modèle qui ne l'a jamais vue."
   },
-  "origin_label": "Bloc 4 · Amandier · Errachidia (188 dates, 2018-2024)",
+  "origin_label": "ferme d'amandiers à Errachidia",
   "calibration_note": "Sans calibration : sur 188 échantillons, la calibration sigmoïde ou isotonique réduisait l exactitude par campagne (0.68 et 0.65 contre 0.74).",
   "comparaison": {
     "modele_synthetique_sur_campagnes_reelles": {
@@ -121,5 +121,6 @@
       "accuracy": 0.738,
       "f1_macro": 0.742
     }
-  }
+  },
+  "origin_details": "188 dates, 2018-2024"
 }
