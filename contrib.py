@@ -9,9 +9,11 @@ Chaque contribution est rangée dans un dossier :
         contribution.json   ferme, contact, consentement, résumé des registres
         fichiers/...        fichiers envoyés, tels quels
 
-Stockage :
-- Google Cloud Storage si CONTRIB_BUCKET est défini (Secrets Streamlit ou
-  variable d'environnement) : durable, avec le compte de service déjà utilisé
+Stockage (le premier configuré, dans les Secrets Streamlit ou l'environnement) :
+- GitHub : CONTRIB_GITHUB_REPO (« propriétaire/dépôt », dépôt privé) et
+  CONTRIB_GITHUB_TOKEN (jeton « fine-grained » limité à ce dépôt, droit
+  Contents : lecture et écriture). Gratuit et durable.
+- Google Cloud Storage : CONTRIB_BUCKET, avec le compte de service déjà utilisé
   pour Earth Engine (rôle « Storage Object Creator » sur le bucket).
 - Sinon, dossier local ``contributions/`` (développement uniquement : sur
   Streamlit Cloud, il est effacé à chaque redémarrage).
@@ -174,6 +176,44 @@ class GCSStorage:
         return f"gs://{self.bucket_name}/contributions"
 
 
+class GitHubStorage:
+    """Range chaque fichier dans un dépôt GitHub privé via l'API « contents » (un commit par fichier)."""
+
+    durable = True
+    API = "https://api.github.com"
+
+    def __init__(self, repo: str, token: str, branch: str = "main", session=None):
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or ""):
+            raise ValueError("CONTRIB_GITHUB_REPO doit être de la forme propriétaire/dépôt.")
+        self.repo, self.branch = repo, branch
+        if session is None:
+            import requests
+
+            session = requests.Session()
+        session.headers.update({"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                                "X-GitHub-Api-Version": "2022-11-28"})
+        self.session = session
+
+    def put(self, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        import base64
+        from urllib.parse import quote
+
+        url = f"{self.API}/repos/{self.repo}/contents/" + quote(f"contributions/{path}")
+        body = {"message": f"Contribution : {path}", "content": base64.b64encode(data).decode("ascii"),
+                "branch": self.branch}
+        r = self.session.put(url, json=body, timeout=60)
+        if r.status_code not in (200, 201):
+            detail = ""
+            try:
+                detail = r.json().get("message", "")
+            except Exception:
+                pass
+            raise RuntimeError(f"GitHub a refusé l'envoi ({r.status_code} {detail}).")
+
+    def describe(self) -> str:
+        return f"github.com/{self.repo}/contributions"
+
+
 def _setting(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:
@@ -187,7 +227,10 @@ def _setting(name: str) -> str:
 
 
 def get_storage():
-    """GCS si CONTRIB_BUCKET est configuré, sinon stockage local (non durable)."""
+    """GitHub ou GCS si configuré, sinon stockage local (non durable)."""
+    repo, token = _setting("CONTRIB_GITHUB_REPO"), _setting("CONTRIB_GITHUB_TOKEN")
+    if repo and token:
+        return GitHubStorage(repo, token, _setting("CONTRIB_GITHUB_BRANCH") or "main")
     bucket = _setting("CONTRIB_BUCKET")
     if not bucket:
         return LocalStorage()

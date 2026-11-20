@@ -49,7 +49,7 @@ HydroStressPrototype/
 ├── water_balance.py           # Bilan hydrique FAO-56 -> Ks -> classe de stress
 ├── farm_dataset.py            # Entraînement sur une ferme réelle (CLI en 6 étapes, fonctions réutilisées par l'app)
 ├── farm_ui.py                 # Section Streamlit « Entraîner sur ma ferme »
-├── contrib.py / contrib_ui.py  # Contributions de données des agriculteurs (bucket GCS)
+├── contrib.py / contrib_ui.py  # Contributions de données des agriculteurs (GitHub privé ou bucket GCS)
 ├── stations.py                # Validation par les stations météo NOAA GSOD
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
@@ -263,19 +263,21 @@ leur accord écrit. Chaque envoi reçoit une référence et est rangé dans
 `contributions/<date>_<parcelle>_<référence>/` (`contribution.json` + `fichiers/registres/…`, `fichiers/autres/…`).
 Le nom et la position des fermes ne sont jamais publiés.
 
-**Stockage durable (obligatoire sur Streamlit Cloud)** : un bucket Google Cloud Storage, avec le compte de service
-déjà utilisé pour Earth Engine.
+**Stockage durable (obligatoire sur Streamlit Cloud)**, au choix :
 
-```bash
-gcloud storage buckets create gs://<nom-du-bucket> --location=europe-west1 --uniform-bucket-level-access
-gcloud storage buckets add-iam-policy-binding gs://<nom-du-bucket> \
-  --member=serviceAccount:<email-du-compte-de-service> --role=roles/storage.objectCreator
-```
+- **GitHub (gratuit, recommandé)** : un dépôt **privé** (ex. `hydrostress-contributions`) et un jeton
+  *fine-grained* limité à ce seul dépôt, avec le droit *Contents : Read and write*. Dans les *Secrets* Streamlit :
+  ```toml
+  CONTRIB_GITHUB_REPO = "TARIK-HORTI/hydrostress-contributions"
+  CONTRIB_GITHUB_TOKEN = "github_pat_..."
+  ```
+- **Google Cloud Storage** (facturation Google Cloud requise) : `CONTRIB_BUCKET = "<nom-du-bucket>"`, et le compte
+  de service Earth Engine avec le rôle `roles/storage.objectCreator` sur le bucket.
 
-Puis, dans les *Secrets* Streamlit : `CONTRIB_BUCKET = "<nom-du-bucket>"`. Sans ce réglage, les envois vont
-n'est pas proposé (message « ouvre très bientôt ») ; en local, `CONTRIB_ALLOW_LOCAL=1` les range dans `contributions/`.
+Sans stockage durable, le formulaire affiche « L'envoi de données ouvre très bientôt » et n'accepte rien (les
+fichiers seraient perdus au redémarrage). En local, `CONTRIB_ALLOW_LOCAL=1` range les envois dans `contributions/`.
 
-**Entraîner avec une contribution** : téléchargez le dossier (`gcloud storage cp -r gs://<bucket>/contributions/<dossier> .`),
+**Entraîner avec une contribution** : téléchargez le dossier (clonez le dépôt de contributions, ou `gcloud storage cp -r gs://<bucket>/contributions/<dossier> .`),
 puis suivez les étapes de `farm_dataset.py` avec la position, la culture et les registres reçus
 (`init` → `climate` → `irrigation` → `balance` → `build` → `train`, avec `--extra` pour ajouter les datasets des
 autres fermes), ou passez par la section « 🌴 Entraîner sur ma ferme ».

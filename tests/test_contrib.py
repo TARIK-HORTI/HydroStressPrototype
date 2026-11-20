@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 import contrib
-from contrib import Contribution, GCSStorage, LocalStorage, submit
+from contrib import Contribution, GCSStorage, GitHubStorage, LocalStorage, submit
 
 
 def make(**kw):
@@ -95,3 +95,51 @@ def test_storage_is_local_without_bucket(monkeypatch):
 def test_summary_is_none_when_registers_unreadable():
     assert contrib.summarize_registers([("x.xlsx", b"not an excel file")], 10) is None
     assert contrib.summarize_registers([("x.xlsx", b"PK")], None) is None
+
+
+class FakeSession:
+    def __init__(self, status=201):
+        self.headers, self.calls, self.status = {}, [], status
+
+    def put(self, url, json=None, timeout=None):
+        self.calls.append((url, json))
+        status = self.status
+
+        class R:
+            status_code = status
+
+            @staticmethod
+            def json():
+                return {"message": "Bad credentials"}
+        return R()
+
+
+def test_github_storage_puts_files_in_private_repo():
+    import base64
+
+    s = FakeSession()
+    ref = submit(make(), GitHubStorage("TARIK-HORTI/hydrostress-contributions", "secret", session=s))
+    assert s.headers["Authorization"] == "Bearer secret"
+    urls = [u for u, _ in s.calls]
+    assert all(u.startswith("https://api.github.com/repos/TARIK-HORTI/hydrostress-contributions/contents/contributions/")
+               for u in urls)
+    assert any(u.endswith(f"{ref}/contribution.json") for u in urls)
+    xlsx = next(body for u, body in s.calls if u.endswith(".xlsx"))
+    assert base64.b64decode(xlsx["content"]) == b"PK\x03\x04data" and xlsx["branch"] == "main"
+    assert any("irrigation%202021-2022.xlsx" in u for u in urls)
+
+
+def test_github_storage_reports_refusal():
+    with pytest.raises(RuntimeError, match="401"):
+        submit(make(), GitHubStorage("o/r", "bad", session=FakeSession(status=401)))
+
+
+def test_github_repo_must_be_owner_slash_name():
+    with pytest.raises(ValueError):
+        GitHubStorage("pas un depot", "t", session=FakeSession())
+
+
+def test_storage_prefers_github_when_configured(monkeypatch):
+    values = {"CONTRIB_GITHUB_REPO": "o/r", "CONTRIB_GITHUB_TOKEN": "t"}
+    monkeypatch.setattr(contrib, "_setting", lambda name: values.get(name, ""))
+    assert isinstance(contrib.get_storage(), GitHubStorage)
