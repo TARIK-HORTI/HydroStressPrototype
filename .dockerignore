@@ -1,0 +1,11 @@
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+tests
+data
+.streamlit/secrets.toml
+*.json
+!models/*.json
+.env
