@@ -255,6 +255,27 @@ Les réflectances Sentinel-2 L2A sont converties en [0, 1] (÷ 10 000) avant le 
 
 ---
 
+## 🧠 Modèle actuel : entraîné sur des données réelles
+
+Le modèle livré dans `models/` est entraîné sur les **registres d'irrigation réels du bloc 4** (amandier, Errachidia,
+188 dates de 2018 à 2024, 7 campagnes) : le stress de chaque date vient du bilan hydrique FAO-56, les 26 variables
+de Sentinel-2 et du climat. Random Forest (400 arbres, profondeur 8, au moins 12 exemples par feuille, classes
+équilibrées), sans calibration.
+
+Évaluation **campagne par campagne** (chaque campagne réelle est prédite par un modèle qui ne l'a jamais vue) :
+
+| Modèle | Exactitude | F1 macro | Stress sévère détecté |
+|---|---|---|---|
+| Ancien modèle synthétique (`models/synthetique/`) | 28 % | 0,24 | 76 % |
+| Meilleur mélange synthétique + réel | 61 % | 0,59 | 57 % |
+| Réel seul, anciens réglages | 71 % | 0,70 | 84 % |
+| **Réel seul, modèle livré** | **74 %** | **0,74** | **86,5 %** (précision 73 %) |
+
+Les données synthétiques ne ressemblent pas aux mesures réelles : les mélanger fait baisser les résultats. Le
+modèle progressera avec les registres d'autres fermes (section « 🤝 Aidez-nous à améliorer le modèle ») ;
+`python outils/comparer_modeles.py data/<ferme>/dataset.csv` refait cette comparaison. Hors amandier et hors
+Errachidia, les résultats restent indicatifs.
+
 ## 🤝 Contributions de données (section « Aidez-nous à améliorer le modèle »)
 
 Les agriculteurs envoient depuis l'application la description de leur parcelle, leurs registres d'irrigation
