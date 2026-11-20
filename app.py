@@ -171,7 +171,7 @@ def hero(predictor):
     synthetic = meta.get("data_source") == "synthetic"
     chips = [
         "🛰️ Sentinel-2 · 10 m", "🌧️ CHIRPS · pluie quotidienne", "🌡️ ERA5-Land · T° & humidité",
-        "🤖 Random Forest calibré", f"🗺️ {len(ZONES)} zones agricoles",
+        "🤖 Random Forest", f"🗺️ {len(ZONES)} zones agricoles",
     ]
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
