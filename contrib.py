@@ -214,6 +214,30 @@ class GitHubStorage:
         return f"github.com/{self.repo}/contributions"
 
 
+def _find_setting(secrets, name: str) -> str:
+    """Cherche ``name`` au premier niveau des secrets, puis dans les sections ([…]).
+
+    Des lignes ajoutées en bas du fichier Secrets, après une section comme [gcp_service_account],
+    appartiennent à cette section : on les retrouve quand même.
+    """
+    try:
+        value = secrets.get(name)
+    except Exception:
+        value = None
+    if value:
+        return str(value).strip()
+    try:
+        items = list(secrets.items())
+    except Exception:
+        return ""
+    for _, section in items:
+        if hasattr(section, "get") and hasattr(section, "items"):
+            found = _find_setting(section, name)
+            if found:
+                return found
+    return ""
+
+
 def _setting(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:
@@ -221,7 +245,7 @@ def _setting(name: str) -> str:
     try:
         import streamlit as st
 
-        return str(st.secrets.get(name, "")).strip()
+        return _find_setting(st.secrets, name)
     except Exception:
         return ""
 
