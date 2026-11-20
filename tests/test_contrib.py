@@ -143,3 +143,11 @@ def test_storage_prefers_github_when_configured(monkeypatch):
     values = {"CONTRIB_GITHUB_REPO": "o/r", "CONTRIB_GITHUB_TOKEN": "t"}
     monkeypatch.setattr(contrib, "_setting", lambda name: values.get(name, ""))
     assert isinstance(contrib.get_storage(), GitHubStorage)
+
+
+def test_settings_found_inside_a_secrets_section():
+    secrets = {"gcp_service_account": {"type": "service_account", "CONTRIB_GITHUB_REPO": "o/r"},
+               "CONTRIB_GITHUB_TOKEN": "t"}
+    assert contrib._find_setting(secrets, "CONTRIB_GITHUB_REPO") == "o/r"
+    assert contrib._find_setting(secrets, "CONTRIB_GITHUB_TOKEN") == "t"
+    assert contrib._find_setting(secrets, "ABSENT") == ""
