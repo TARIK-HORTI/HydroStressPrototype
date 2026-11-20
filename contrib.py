@@ -238,6 +238,23 @@ def _find_setting(secrets, name: str) -> str:
     return ""
 
 
+def secret_names() -> list:
+    """Noms des réglages visibles par l'app (jamais les valeurs), pour le diagnostic."""
+    names = [k for k in ("CONTRIB_GITHUB_REPO", "CONTRIB_GITHUB_TOKEN", "CONTRIB_BUCKET") if os.environ.get(k)]
+    try:
+        import streamlit as st
+
+        for key, value in st.secrets.items():
+            if hasattr(value, "items"):
+                names += [f"[{key}] {sub}" for sub in value.keys() if str(sub).upper().startswith("CONTRIB")]
+                names.append(f"[{key}]")
+            else:
+                names.append(str(key))
+    except Exception as e:
+        names.append(f"(secrets illisibles : {type(e).__name__})")
+    return names
+
+
 def _setting(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:

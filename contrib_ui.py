@@ -10,7 +10,8 @@ from datetime import date
 
 import streamlit as st
 
-from contrib import CONSENT_TEXT, OTHER_TYPES, REGISTER_TYPES, Contribution, get_storage, submit, summarize_registers
+from contrib import (CONSENT_TEXT, OTHER_TYPES, REGISTER_TYPES, Contribution, get_storage, secret_names, submit,
+                     summarize_registers)
 from farm import CROPS, IRRIGATION, SOILS, Farm, parse_spacing
 
 
@@ -34,6 +35,8 @@ def render_contribution():
     if not storage.durable and os.environ.get("CONTRIB_ALLOW_LOCAL") != "1":
         # Sans bucket, les fichiers seraient perdus au prochain redémarrage : on n'accepte pas d'envoi.
         st.info("📬 L'envoi de données ouvre très bientôt. En attendant, contactez-nous pour partager vos registres.")
+        if st.query_params.get("diag") == "1":
+            st.caption("Diagnostic (noms seulement) : " + ", ".join(secret_names()))
         return
     with st.form("contribution", clear_on_submit=False):
         st.markdown("**1. Vous**")
