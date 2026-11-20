@@ -130,8 +130,17 @@ div.stButton > button, div.stDownloadButton > button {{border-radius:10px; font-
 # ---------------------------------------------------------------------------
 # Ressources
 # ---------------------------------------------------------------------------
+def model_version() -> str:
+    """Date des fichiers du modèle : un nouveau modèle déployé invalide le cache."""
+    try:
+        return "|".join(str(os.path.getmtime(f"models/hydrostress{suffix}"))
+                        for suffix in ("_pipeline.joblib", "_metadata.json"))
+    except OSError:
+        return "absent"
+
+
 @st.cache_resource(show_spinner=False)
-def get_predictor():
+def get_predictor(version: str = ""):
     try:
         return HydroStressPredictor()
     except Exception as e:  # modèle absent ou illisible
@@ -576,7 +585,7 @@ def render_simulation(predictor):
 # Page
 # ---------------------------------------------------------------------------
 def main():
-    predictor = get_predictor()
+    predictor = get_predictor(model_version())
     if isinstance(predictor, Exception):
         st.error(f"Le modèle de prédiction n'a pas pu être chargé : {predictor}")
         st.info("Entraînez un modèle : `python train_model.py training_data.csv --source synthetic`")
