@@ -43,7 +43,7 @@ from report import CLASS_STYLES, STATUS_LABELS, build_report, report_to_html
 from stations import validate_analysis
 
 st.set_page_config(
-    page_title="HydroStress Maroc" + (" (bêta)" if os.environ.get("HYDROSTRESS_STAGE", "beta").lower() != "production" else ""),
+    page_title="HydroStress Maroc" + (" (bêta)" if os.environ.get("HYDROSTRESS_STAGE", "production").lower() == "beta" else ""),
     page_icon="💧",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -66,10 +66,9 @@ def app_setting(name: str, default: str = "") -> str:
     return str(value).strip() if value not in (None, "") else default
 
 
-# "beta" (défaut) affiche les mentions « version bêta / démonstration » ;
-# "production" les retire, le jour du lancement officiel.
-STAGE = app_setting("HYDROSTRESS_STAGE", "beta").lower()
-IS_BETA = STAGE != "production"
+# "production" (défaut) : interface sans mention de test ; "beta" réaffiche le badge BÊTA
+STAGE = app_setting("HYDROSTRESS_STAGE", "production").lower()
+IS_BETA = STAGE == "beta"
 BRAND = app_setting("HYDROSTRESS_BRAND", "")
 
 # ---------------------------------------------------------------------------
@@ -683,7 +682,7 @@ def main():
 
         ready = coordinates is not None and parcel_error is None
         analyse = st.button(t("btn_analyse"), type="primary", width="stretch", disabled=not ready)
-        demo = st.button(t("btn_demo"), width="stretch", disabled=not ready)
+        demo = False  # le bouton d'exemple (données de démonstration) n'est plus proposé en production
 
         parcel_key = json.dumps([coordinates, str(analysis_date), crop, lookback]) if coordinates else None
         if parcel_key != st.session_state.parcel_key:

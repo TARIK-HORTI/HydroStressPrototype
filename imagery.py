@@ -546,3 +546,143 @@ def ee_change_fractions(coordinates: List[List[float]], day_a: date, day_b: date
     info = flags.reduceRegion(reducer=ee.Reducer.mean(), geometry=geometry, scale=10,
                               maxPixels=1e9, bestEffort=True).getInfo()
     return {k: float(v) for k, v in info.items() if v is not None}
+
+
+# ---------------------------------------------------------------------------
+# Orientation : zones de la parcelle qui ont changé entre A et B
+# ---------------------------------------------------------------------------
+# Seuils par pixel (plus larges que pour la moyenne de la parcelle : un pixel est plus bruité)
+PIXEL_THRESHOLDS = {"NDVI": 0.08, "NDMI": 0.06, "NDRE": 0.05, "PSRI": 0.04}
+
+# Type de changement d'une zone : code du pixel, couleur, priorité de visite
+ZONE_CATEGORIES = {
+    1: {"key": "water", "color": "#3B82F6", "weight": 3},     # perte d'eau seule
+    2: {"key": "health", "color": "#F59E0B", "weight": 3},    # chlorophylle / jaunissement seuls
+    3: {"key": "decline", "color": "#DC2626", "weight": 4},   # eau + chlorophylle
+    4: {"key": "vigor", "color": "#A855F7", "weight": 1},     # vigueur seule
+}
+
+MIN_ZONE_PIXELS = 5      # 5 pixels de 10 m = 500 m² : en dessous, bruit ou un seul arbre
+MAX_ZONES = 12
+PIXEL_AREA_M2 = 100.0
+
+
+def ee_change_zones(coordinates: List[List[float]], day_a: date, day_b: date, relative: bool = True,
+                    min_pixels: int = MIN_ZONE_PIXELS, max_zones: int = MAX_ZONES) -> List[Dict[str, Any]]:
+    """
+    Détecte les zones de la parcelle qui ont changé entre A et B et les renvoie en polygones
+    (GeoJSON, EPSG:4326) avec, pour chacune : type de changement, nombre de pixels, moyennes des
+    indices en A et en B et écart moyen (relatif au reste de la parcelle si `relative`).
+    """
+    _require_ee()
+    geometry = ee.Geometry.Polygon(coordinates)
+    bands = ["NDVI", "NDMI", "NDRE", "PSRI"]
+    ia = ee_indices(ee_scene(geometry, day_a)).select(bands)
+    ib = ee_indices(ee_scene(geometry, day_b)).select(bands)
+    d = ib.subtract(ia)
+    if relative:  # changement par rapport à l'évolution normale (médiane) de la parcelle
+        med = d.reduceRegion(reducer=ee.Reducer.median(), geometry=geometry, scale=10,
+                             maxPixels=1e9, bestEffort=True)
+        d = d.subtract(ee.Image.constant(med.values(bands)).rename(bands))
+
+    water = d.select("NDMI").lt(-PIXEL_THRESHOLDS["NDMI"])
+    chloro = d.select("NDRE").lt(-PIXEL_THRESHOLDS["NDRE"]).Or(d.select("PSRI").gt(PIXEL_THRESHOLDS["PSRI"]))
+    vigor = d.select("NDVI").lt(-PIXEL_THRESHOLDS["NDVI"])
+    cat = (ee.Image(0).where(vigor, 4).where(chloro, 2).where(water, 1).where(water.And(chloro), 3)
+           .rename("cat").toInt().clip(geometry))
+    cat = cat.updateMask(cat.gt(0))
+    cat = cat.updateMask(cat.connectedPixelCount(256, True).gte(min_pixels))
+
+    proj = ee_collection(geometry, day_b.isoformat(), (day_b + timedelta(days=1)).isoformat()) \
+        .first().select("B8").projection()
+    zones = cat.reduceToVectors(
+        geometry=geometry, crs=proj, scale=10, geometryType="polygon", eightConnected=True,
+        labelProperty="cat", reducer=ee.Reducer.countEvery(), maxPixels=1e9,
+    )
+    zones = zones.filter(ee.Filter.gte("count", min_pixels)).sort("count", False).limit(max_zones)
+    stats_img = ee.Image.cat([ia.rename([f"A_{b}" for b in bands]), ib.rename([f"B_{b}" for b in bands]),
+                              d.rename([f"D_{b}" for b in bands])])
+    zones = stats_img.reduceRegions(collection=zones, reducer=ee.Reducer.mean(), scale=10)
+    zones = zones.map(lambda f: f.setGeometry(f.geometry().transform("EPSG:4326", 1)))
+    return zones.getInfo().get("features", [])
+
+
+def _representative_point(geometry: Dict[str, Any]) -> Tuple[float, float]:
+    """(lat, lon) d'un point à l'intérieur de la zone, pour s'y rendre."""
+    from shapely.geometry import shape
+    p = shape(geometry).representative_point()
+    return round(p.y, 6), round(p.x, 6)
+
+
+def navigation_url(lat: float, lon: float) -> str:
+    """Itinéraire Google Maps jusqu'au point (ouvre l'application sur téléphone)."""
+    return f"https://www.google.com/maps/dir/?api=1&destination={lat:.6f},{lon:.6f}"
+
+
+def build_zones(features: List[Dict[str, Any]], day_a: date, day_b: date, crop: Optional[str] = None,
+                lang: str = "fr") -> List[Dict[str, Any]]:
+    """
+    Zones à visiter, de la plus prioritaire à la moins prioritaire (type de changement × surface),
+    avec indices en baisse, causes possibles et vérifications au champ.
+    """
+    bands = ["NDVI", "NDMI", "NDRE", "PSRI"]
+    zones = []
+    for f in features:
+        p = f.get("properties", {})
+        cat = int(p.get("cat", 0))
+        if cat not in ZONE_CATEGORIES or not f.get("geometry"):
+            continue
+        deltas = {b: p.get(f"D_{b}") for b in bands}
+        if any(v is None for v in deltas.values()):
+            continue
+        area = float(p.get("count", 0)) * PIXEL_AREA_M2
+        # Les causes se lisent sur l'écart (absolu ou relatif) : a = 0, b = écart
+        reading = interpret_change({b: 0.0 for b in bands}, {b: float(deltas[b]) for b in bands},
+                                   day_a, day_b, crop=crop, lang=lang)
+        hypotheses = [h for h in reading["hypotheses"] if h["key"] not in ("stable", "growth", "weeds")]
+        lat, lon = _representative_point(f["geometry"])
+        changed = [b for b in bands
+                   if (deltas[b] > PIXEL_THRESHOLDS[b] if b == "PSRI" else deltas[b] < -PIXEL_THRESHOLDS[b])]
+        zones.append({
+            "category": ZONE_CATEGORIES[cat]["key"], "color": ZONE_CATEGORIES[cat]["color"],
+            "area_m2": area, "lat": lat, "lon": lon, "geometry": f["geometry"],
+            "a": {b: p.get(f"A_{b}") for b in bands}, "b": {b: p.get(f"B_{b}") for b in bands},
+            "delta": {b: float(deltas[b]) for b in bands}, "changed": changed,
+            "hypotheses": hypotheses, "checks": reading["checks"],
+            "score": ZONE_CATEGORIES[cat]["weight"] * area, "nav_url": navigation_url(lat, lon),
+        })
+    zones.sort(key=lambda z: z["score"], reverse=True)
+    for i, z in enumerate(zones, 1):
+        z["id"] = i
+    return zones
+
+
+def zones_geojson(zones: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": z["geometry"],
+         "properties": {"zone": z["id"], "type": z["category"], "surface_m2": round(z["area_m2"]),
+                        "lat": z["lat"], "lon": z["lon"],
+                        **{f"ecart_{k}": round(v, 3) for k, v in z["delta"].items()}}}
+        for z in zones]}
+
+
+def zones_kml(zones: List[Dict[str, Any]], title: str = "HydroStress") -> str:
+    """KML (Google Earth, Maps.me, OsmAnd…) : un point et un contour par zone."""
+    from xml.sax.saxutils import escape
+
+    def ring(geom):
+        coords = geom["coordinates"][0] if geom["type"] == "Polygon" else geom["coordinates"][0][0]
+        return " ".join(f"{x:.6f},{y:.6f},0" for x, y in coords)
+
+    marks = []
+    for z in zones:
+        causes = "; ".join(h["title"] for h in z["hypotheses"])
+        name = escape(f"Zone {z['id']}")
+        marks.append(
+            f"<Placemark><name>{name}</name><description>{escape(causes)}</description>"
+            f"<Point><coordinates>{z['lon']:.6f},{z['lat']:.6f},0</coordinates></Point></Placemark>"
+            f"<Placemark><name>{name}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>"
+            f"{ring(z['geometry'])}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>"
+        )
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+            f"<name>{escape(title)}</name>{''.join(marks)}</Document></kml>")

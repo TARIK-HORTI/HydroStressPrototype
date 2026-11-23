@@ -24,6 +24,9 @@ from streamlit_folium import st_folium
 from i18n import get_lang, t
 from imagery import (
     LAYERS,
+    build_zones,
+    zones_geojson,
+    zones_kml,
     SERIES_INDICES,
     THEMES,
     default_period,
@@ -40,6 +43,11 @@ from imagery import (
     trend,
     trend_label,
 )
+from imagery_text import INTERP
+
+
+def interpret_disclaimer(lang: str) -> str:
+    return INTERP["disclaimer"].get(lang) or INTERP["disclaimer"]["fr"]
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +138,124 @@ def render_interpretation(result: dict):
             st.markdown(f"- {c}")
     st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>{t('in_field_last')}</b> {result['disclaimer']}</div>",
                 unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _zones(coords_json: str, day_a: date, day_b: date, relative: bool) -> list:
+    from extract_data import initialize_earth_engine
+    from imagery import ee_change_zones
+    initialize_earth_engine()
+    return ee_change_zones(json.loads(coords_json), day_a, day_b, relative=relative)
+
+
+def _area(m2: float) -> str:
+    return t("zn_area_ha", v=f"{m2 / 10000:.2f}") if m2 >= 5000 else t("zn_area_m2", v=f"{m2:.0f}")
+
+
+def _zones_map(coordinates: List[List[float]], zones: list, key: str):
+    poly = Polygon(coordinates)
+    minx, miny, maxx, maxy = poly.bounds
+    m = folium.Map(location=[poly.centroid.y, poly.centroid.x], zoom_start=16, tiles=None, control_scale=True)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery", name="Satellite", max_zoom=20, max_native_zoom=18,
+    ).add_to(m)
+    folium.GeoJson({"type": "Polygon", "coordinates": [coordinates]},
+                   style_function=lambda _: {"color": "#F8FAFC", "weight": 2, "fillOpacity": 0}).add_to(m)
+    for z in zones:
+        label = t(f"zn_cat_{z['category']}")
+        folium.GeoJson(
+            z["geometry"],
+            style_function=(lambda _, c=z["color"]: {"color": c, "weight": 2, "fillColor": c, "fillOpacity": .45}),
+            tooltip=f"Zone {z['id']} · {label}",
+        ).add_to(m)
+        folium.Marker(
+            [z["lat"], z["lon"]],
+            icon=folium.DivIcon(
+                icon_size=(26, 26), icon_anchor=(13, 13),
+                html=(f"<div style='width:26px;height:26px;border-radius:13px;background:{z['color']};"
+                      "color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;"
+                      f"justify-content:center;border:2px solid #fff'>{z['id']}</div>"),
+            ),
+            popup=folium.Popup(f"<b>Zone {z['id']}</b><br>{label}<br>{_area(z['area_m2'])}<br>"
+                               f"<a href='{z['nav_url']}' target='_blank'>{t('zn_go')}</a>", max_width=240),
+        ).add_to(m)
+    m.fit_bounds([[miny, minx], [maxy, maxx]], padding=(20, 20))
+    st_folium(m, height=460, use_container_width=True, returned_objects=[], key=key)
+
+
+def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, day_b: date,
+                 crop: str | None, lang: str):
+    """Orientation : zones qui ont changé, dessinées, classées, avec causes possibles et itinéraire."""
+    st.markdown(t("zn_title"))
+    st.caption(t("zn_intro"))
+    c1, c2 = st.columns([1.4, 1])
+    relative = c1.toggle(t("zn_relative"), value=True, help=t("zn_relative_help"), key="zn_relative")
+    run = c2.button(t("zn_detect"), type="primary", width="stretch", key="zn_detect")
+    key = json.dumps([coords_json, str(day_a), str(day_b), relative])
+    if run:
+        with st.spinner(t("zn_detecting")):
+            try:
+                st.session_state.zn_result = {"key": key, "features": _zones(coords_json, day_a, day_b, relative),
+                                              "error": None}
+            except Exception as e:
+                logger.exception("Zones de changement")
+                st.session_state.zn_result = {"key": key, "features": None, "error": str(e)}
+    res = st.session_state.get("zn_result")
+    if not res or res["key"] != key:
+        return
+    if res["error"]:
+        st.error(t("zn_error", e=res["error"]))
+        return
+    zones = build_zones(res["features"], day_a, day_b, crop=crop, lang=lang)
+    if not zones:
+        st.success(t("zn_none"))
+        return
+    st.warning(t("zn_found", n=len(zones)))
+    legend = " ".join(
+        f"<span class='hs-chip' style='border-color:{c};color:{c};background:transparent'>"
+        f"■ {t('zn_cat_' + k)}</span>"
+        for k, c in (("decline", "#DC2626"), ("water", "#3B82F6"), ("health", "#F59E0B"), ("vigor", "#A855F7"))
+    )
+    st.markdown(legend, unsafe_allow_html=True)
+    _zones_map(coordinates, zones, key=f"zn_map_{abs(hash(key))}")
+
+    for z in zones:
+        head = t("zn_card", id=z["id"], cat=t(f"zn_cat_{z['category']}"), area=_area(z["area_m2"]),
+                 lat=f"{z['lat']:.5f}", lon=f"{z['lon']:.5f}")
+        with st.expander(head, expanded=z["id"] <= 2):
+            cz1, cz2 = st.columns([1, 1.4], gap="large")
+            with cz1:
+                st.markdown(t("zn_changed"))
+                for b in ["NDVI", "NDMI", "NDRE", "PSRI"]:
+                    va, vb, d = z["a"].get(b), z["b"].get(b), z["delta"][b]
+                    mark = "🔻 " if b in z["changed"] else ""
+                    vals = f"{va:.2f} → {vb:.2f}" if va is not None and vb is not None else "—"
+                    st.markdown(f"- {mark}**{b}** : {vals} ({t('zn_delta')} {d:+.2f})")
+                st.link_button(t("zn_go"), z["nav_url"])
+            with cz2:
+                st.markdown(t("in_causes"))
+                for h in z["hypotheses"]:
+                    hc = LIKELIHOOD_COLORS.get(h["likelihood"], LIKELIHOOD_COLORS["possible"])
+                    st.markdown(
+                        f"<div style='margin-bottom:6px'><span class='hs-chip' style='border-color:{hc};"
+                        f"color:{hc};background:transparent'>{t('lk_' + h['likelihood'])}</span> "
+                        f"<b>{h['title']}</b><br><span style='color:#CBD5E1;font-size:.9rem'>{h['detail']}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                if z["checks"]:
+                    st.markdown(t("in_checks"))
+                    for c in z["checks"]:
+                        st.markdown(f"- {c}")
+
+    d1, d2 = st.columns(2)
+    d1.download_button(t("zn_geojson"), json.dumps(zones_geojson(zones), ensure_ascii=False),
+                       file_name=f"zones_{day_a}_{day_b}.geojson", mime="application/geo+json", width="stretch")
+    d2.download_button(t("zn_kml"), zones_kml(zones, f"HydroStress {day_a} - {day_b}"),
+                       file_name=f"zones_{day_a}_{day_b}.kml", mime="application/vnd.google-earth.kml+xml",
+                       width="stretch")
+    st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>{t('in_field_last')}</b> "
+                f"{interpret_disclaimer(lang)}</div>", unsafe_allow_html=True)
 
 
 def _map(coordinates: List[List[float]], tile_url: str, name: str, key: str, height: int = 380):
@@ -315,6 +441,8 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
             {k: row_a[k] for k in SERIES_INDICES}, {k: row_b[k] for k in SERIES_INDICES},
             day_a, day_b, crop=crop, fractions=fractions, lang=lang,
         ))
+        st.divider()
+        render_zones(coordinates, coords_json, day_a, day_b, crop, lang)
     else:
         st.info(t("img_pick_two"))
 

@@ -262,6 +262,59 @@ IMAGERY_TEXT: Dict[str, Dict[str, str]] = {
                          "ar": "**تطوّر القطعة خلال الفترة** (المتوسط في كل صورة)",
                          "en": "**Plot trend over the period** (average for each image)"},
     "img_series_pick": {"fr": "Indices", "ar": "المؤشرات", "en": "Indices"},
+    # Orientation : zones à visiter
+    "zn_title": {"fr": "#### 🧭 Orientation : zones de la parcelle à visiter",
+                 "ar": "#### 🧭 التوجيه: مناطق القطعة التي يجب زيارتها",
+                 "en": "#### 🧭 Guidance: zones of the plot to visit"},
+    "zn_intro": {
+        "fr": "Le système compare les deux images pixel par pixel (NDVI, NDMI, NDRE, PSRI), repère les zones qui ont "
+              "changé, les dessine sur la carte et les classe de la plus urgente à la moins urgente. Pour chaque "
+              "zone : les indices qui ont bougé, les causes possibles, ce qu'il faut regarder sur place et "
+              "l'itinéraire pour s'y rendre.",
+        "ar": "يقارن النظام الصورتين نقطة بنقطة (NDVI، NDMI، NDRE، PSRI)، ويحدّد المناطق التي تغيّرت، ويرسمها على "
+              "الخريطة ويرتّبها من الأكثر استعجالًا إلى الأقل. لكل منطقة: المؤشرات التي تغيّرت، والأسباب المحتملة، "
+              "وما يجب فحصه في عين المكان، والطريق للوصول إليها.",
+        "en": "The system compares the two images pixel by pixel (NDVI, NDMI, NDRE, PSRI), finds the zones that "
+              "changed, draws them on the map and ranks them from most to least urgent. For each zone: the indices "
+              "that moved, possible causes, what to look at on site and directions to get there.",
+    },
+    "zn_relative": {"fr": "Comparer au reste de la parcelle (recommandé)", "ar": "المقارنة مع باقي القطعة (موصى به)",
+                    "en": "Compare with the rest of the plot (recommended)"},
+    "zn_relative_help": {
+        "fr": "Activé : seules les zones qui ont évolué plus mal que l'ensemble de la parcelle sont signalées "
+              "(l'effet de la saison ou d'une irrigation générale est retiré). Désactivé : toute baisse est signalée.",
+        "ar": "مفعّل: لا تُعرض إلا المناطق التي تطوّرت أسوأ من مجموع القطعة (يُحذف أثر الموسم أو السقي العام). غير "
+              "مفعّل: يُعرض كل انخفاض.",
+        "en": "On: only zones that changed for the worse compared with the whole plot are flagged (the effect of the "
+              "season or of plot-wide irrigation is removed). Off: every decline is flagged.",
+    },
+    "zn_detect": {"fr": "🧭 Détecter les zones qui ont changé", "ar": "🧭 كشف المناطق التي تغيّرت",
+                  "en": "🧭 Detect the zones that changed"},
+    "zn_detecting": {"fr": "Comparaison des deux images pixel par pixel…", "ar": "جارٍ مقارنة الصورتين نقطة بنقطة…",
+                     "en": "Comparing the two images pixel by pixel…"},
+    "zn_error": {"fr": "Détection impossible : {e}", "ar": "تعذّر الكشف: {e}", "en": "Detection failed: {e}"},
+    "zn_none": {
+        "fr": "Aucune zone d'au moins 500 m² n'a changé de façon notable entre les deux dates.",
+        "ar": "لم تتغيّر أي منطقة تفوق 500 م² بشكل ملحوظ بين التاريخين.",
+        "en": "No zone of at least 500 m² changed notably between the two dates.",
+    },
+    "zn_found": {"fr": "{n} zone(s) à visiter, de la plus prioritaire à la moins prioritaire.",
+                 "ar": "{n} منطقة للزيارة، من الأكثر أولوية إلى الأقل.",
+                 "en": "{n} zone(s) to visit, from highest to lowest priority."},
+    "zn_card": {"fr": "Zone {id} · {cat} · {area} · {lat}, {lon}", "ar": "المنطقة {id} · {cat} · {area} · {lat}، {lon}",
+                "en": "Zone {id} · {cat} · {area} · {lat}, {lon}"},
+    "zn_changed": {"fr": "**Indices qui ont changé**", "ar": "**المؤشرات التي تغيّرت**", "en": "**Indices that changed**"},
+    "zn_go": {"fr": "📍 Y aller (Google Maps)", "ar": "📍 الذهاب إليها (Google Maps)", "en": "📍 Go there (Google Maps)"},
+    "zn_geojson": {"fr": "⬇️ Zones (GeoJSON)", "ar": "⬇️ المناطق (GeoJSON)", "en": "⬇️ Zones (GeoJSON)"},
+    "zn_kml": {"fr": "⬇️ Zones pour téléphone (KML : Google Earth, OsmAnd)", "ar": "⬇️ المناطق للهاتف (KML: Google Earth، OsmAnd)",
+               "en": "⬇️ Zones for phone (KML: Google Earth, OsmAnd)"},
+    "zn_area_m2": {"fr": "{v} m²", "ar": "{v} م²", "en": "{v} m²"},
+    "zn_area_ha": {"fr": "{v} ha", "ar": "{v} هكتار", "en": "{v} ha"},
+    "zn_delta": {"fr": "écart", "ar": "الفرق", "en": "change"},
+    "zn_cat_water": {"fr": "Perte d'eau", "ar": "فقدان الماء", "en": "Water loss"},
+    "zn_cat_health": {"fr": "Chlorophylle / jaunissement", "ar": "الكلوروفيل / الاصفرار", "en": "Chlorophyll / yellowing"},
+    "zn_cat_decline": {"fr": "Eau + chlorophylle", "ar": "الماء + الكلوروفيل", "en": "Water + chlorophyll"},
+    "zn_cat_vigor": {"fr": "Baisse de vigueur", "ar": "انخفاض القوة", "en": "Loss of vigour"},
     # Guide
     "gl_title": {"fr": "#### 📖 Comprendre les indices satellite", "ar": "#### 📖 فهم مؤشرات الأقمار الصناعية",
                  "en": "#### 📖 Understanding satellite indices"},
