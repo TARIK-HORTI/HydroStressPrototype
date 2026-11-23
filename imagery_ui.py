@@ -220,6 +220,7 @@ def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, 
     st.markdown(legend, unsafe_allow_html=True)
     _zones_map(coordinates, zones, key=f"zn_map_{abs(hash(key))}")
 
+    delta_label = t("zn_delta_rel") if relative else t("zn_delta")
     for z in zones:
         head = t("zn_card", id=z["id"], cat=t(f"zn_cat_{z['category']}"), area=_area(z["area_m2"]),
                  lat=f"{z['lat']:.5f}", lon=f"{z['lon']:.5f}")
@@ -231,7 +232,7 @@ def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, 
                     va, vb, d = z["a"].get(b), z["b"].get(b), z["delta"][b]
                     mark = "🔻 " if b in z["changed"] else ""
                     vals = f"{va:.2f} → {vb:.2f}" if va is not None and vb is not None else "—"
-                    st.markdown(f"- {mark}**{b}** : {vals} ({t('zn_delta')} {d:+.2f})")
+                    st.markdown(f"- {mark}**{b}** : {vals} ({delta_label} {d:+.2f})")
                 st.link_button(t("zn_go"), z["nav_url"])
             with cz2:
                 st.markdown(t("in_causes"))
