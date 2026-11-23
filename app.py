@@ -146,6 +146,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp butt
 
 div.stButton > button, div.stDownloadButton > button, div.stLinkButton > a {border-radius:8px; font-weight:600;}
 button:focus-visible, a:focus-visible, input:focus-visible {outline:2px solid var(--water) !important; outline-offset:2px;}
+.st-key-lang_select {max-width:190px; margin-inline-start:auto;}
 [data-testid="stExpander"] details {border-radius:10px; border-color:var(--line); background:var(--surface);}
 @media (max-width: 900px) { .hs-steps {grid-template-columns:1fr;} .hs-step {padding-right:0;} }
 @media (prefers-reduced-motion: reduce) { * {animation:none !important; transition:none !important;} }
