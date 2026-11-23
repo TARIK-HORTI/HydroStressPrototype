@@ -10,10 +10,11 @@ from datetime import date
 
 import streamlit as st
 
-from contrib import (CONSENT_TEXT, OTHER_TYPES, REGISTER_TYPES, Contribution, get_storage, secret_names, submit,
+from contrib import (CONSENT_TEXT, OTHER_TYPES, REGISTER_TYPES, Contribution, get_storage, submit,
                      summarize_registers)
 from farm import CROPS, IRRIGATION, SOILS, Farm, parse_spacing
 from i18n import get_lang, pick, t
+from security import allow, log_incident
 from report_text import IRRIGATION_NAMES, SOIL_NAMES, crop_name
 
 # Messages de contrib.Contribution.errors() (en français) -> clé de traduction
@@ -44,8 +45,6 @@ def render_contribution():
     if not storage.durable and os.environ.get("CONTRIB_ALLOW_LOCAL") != "1":
         # Sans bucket, les fichiers seraient perdus au prochain redémarrage : on n'accepte pas d'envoi.
         st.info(t("ct_soon"))
-        if st.query_params.get("diag") == "1":
-            st.caption("Diagnostic (noms seulement) : " + ", ".join(secret_names()))
         return
     with st.form("contribution", clear_on_submit=False):
         st.markdown(t("ct_you"))
@@ -117,12 +116,16 @@ def render_contribution():
             st.error(p)
         return
 
+    ok, wait = allow("contribution", st.session_state)
+    if not ok:
+        st.warning(t("sec_rate", m=max(1, wait // 60)))
+        return
     with st.spinner(t("ct_sending")):
         contribution.register_summary = summarize_registers(contribution.registers, area)
         try:
             ref = submit(contribution, storage)
-        except Exception as e:  # stockage indisponible
-            st.error(t("ct_failed", e=e))
+        except Exception as e:  # stockage indisponible : détail dans les journaux seulement
+            st.error(t("sec_send_failed", ref=log_incident("contribution", e)))
             return
     st.success(t("ct_thanks", ref=ref))
     summary = contribution.register_summary

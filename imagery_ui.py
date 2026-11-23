@@ -22,8 +22,10 @@ from shapely.geometry import Polygon
 from streamlit_folium import st_folium
 
 from i18n import get_lang, t
+from security import allow, log_incident
 from imagery import (
     LAYERS,
+    album_dates,
     build_zones,
     zones_geojson,
     zones_kml,
@@ -51,8 +53,8 @@ def interpret_disclaimer(lang: str) -> str:
 
 logger = logging.getLogger(__name__)
 
-SERIES_COLORS = {"NDVI": "#4ADE80", "NDMI": "#38BDF8", "NDRE": "#FACC15", "PSRI": "#F97316", "MSI": "#F87171"}
-TREND_COLORS = {"better": "#22C55E", "worse": "#EF4444", "stable": "#94A3B8", "unknown": "#94A3B8"}
+SERIES_COLORS = {"NDVI": "#1D6B45", "NDMI": "#1C6CA8", "NDRE": "#C98A1B", "PSRI": "#B45309", "MSI": "#B42318"}
+TREND_COLORS = {"better": "#1D6B45", "worse": "#B42318", "stable": "#5C6B61", "unknown": "#5C6B61"}
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
@@ -78,9 +80,9 @@ def _change(coords_json: str, day_a: date, day_b: date) -> dict:
     return ee_change_fractions(json.loads(coords_json), day_a, day_b)
 
 
-LIKELIHOOD_COLORS = {"probable": "#F59E0B", "possible": "#94A3B8"}
+LIKELIHOOD_COLORS = {"probable": "#9A6412", "possible": "#5C6B61"}
 STATUS_STYLE = {
-    "better": ("#22C55E", "✅"), "stable": ("#38BDF8", "➖"), "worse": ("#EF4444", "⚠️"), "unknown": ("#94A3B8", "❔"),
+    "better": ("#1D6B45", "✅"), "stable": ("#1C6CA8", "➖"), "worse": ("#B42318", "⚠️"), "unknown": ("#5C6B61", "❔"),
 }
 
 
@@ -101,7 +103,7 @@ def render_glossary(selected: str | None = None):
                 f"**{t('gl_meaning')}** {g['meaning']}\n\n"
                 f"**{t('gl_reading')}** {g['reading']}\n\n"
                 f"**{t('gl_use')}** {g['use']}\n\n"
-                f"<span style='color:#94A3B8;font-size:.85rem'>{t('gl_formula')} : {g['formula']}</span>",
+                f"<span style='color:var(--muted);font-size:.85rem'>{t('gl_formula')} : {g['formula']}</span>",
                 unsafe_allow_html=True,
             )
 
@@ -111,7 +113,7 @@ def render_interpretation(result: dict):
     st.markdown(t("in_title"))
     st.markdown(
         f"<div class='hs-status' style='border-left:8px solid {color};padding:14px 18px'>"
-        f"<div style='font-size:1.05rem;color:#F1F5F9;font-weight:650'>{icon} {result['headline']}</div></div>",
+        f"<div style='font-size:1.05rem;color:var(--ink);font-weight:600'>{icon} {result['headline']}</div></div>",
         unsafe_allow_html=True,
     )
     c_obs, c_hyp = st.columns([1, 1.3], gap="large")
@@ -129,7 +131,7 @@ def render_interpretation(result: dict):
             st.markdown(
                 f"<div style='margin-bottom:8px'><span class='hs-chip' style='border-color:{hc};color:{hc};"
                 f"background:transparent'>{hl}</span> <b>{h['title']}</b><br>"
-                f"<span style='color:#CBD5E1;font-size:.92rem'>{h['detail']}</span></div>",
+                f"<span style='color:var(--muted);font-size:.92rem'>{h['detail']}</span></div>",
                 unsafe_allow_html=True,
             )
     if result["checks"]:
@@ -194,18 +196,22 @@ def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, 
     run = c2.button(t("zn_detect"), type="primary", width="stretch", key="zn_detect")
     key = json.dumps([coords_json, str(day_a), str(day_b), relative])
     if run:
+        ok, wait = allow("zones", st.session_state)
+        if not ok:
+            st.warning(t("sec_rate", m=max(1, wait // 60)))
+            return
         with st.spinner(t("zn_detecting")):
             try:
                 st.session_state.zn_result = {"key": key, "features": _zones(coords_json, day_a, day_b, relative),
                                               "error": None}
             except Exception as e:
-                logger.exception("Zones de changement")
-                st.session_state.zn_result = {"key": key, "features": None, "error": str(e)}
+                st.session_state.zn_result = {"key": key, "features": None,
+                                              "error": t("sec_service", ref=log_incident("zones", e))}
     res = st.session_state.get("zn_result")
     if not res or res["key"] != key:
         return
     if res["error"]:
-        st.error(t("zn_error", e=res["error"]))
+        st.error(res["error"])
         return
     zones = build_zones(res["features"], day_a, day_b, crop=crop, lang=lang)
     if not zones:
@@ -241,7 +247,7 @@ def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, 
                     st.markdown(
                         f"<div style='margin-bottom:6px'><span class='hs-chip' style='border-color:{hc};"
                         f"color:{hc};background:transparent'>{t('lk_' + h['likelihood'])}</span> "
-                        f"<b>{h['title']}</b><br><span style='color:#CBD5E1;font-size:.9rem'>{h['detail']}</span></div>",
+                        f"<b>{h['title']}</b><br><span style='color:var(--muted);font-size:.9rem'>{h['detail']}</span></div>",
                         unsafe_allow_html=True,
                     )
                 if z["checks"]:
@@ -257,6 +263,40 @@ def render_zones(coordinates: List[List[float]], coords_json: str, day_a: date, 
                        width="stretch")
     st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>{t('in_field_last')}</b> "
                 f"{interpret_disclaimer(lang)}</div>", unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=2 * 3600, show_spinner=False)  # les URL de miniatures Earth Engine expirent
+def _thumbs(coords_json: str, days: tuple) -> list:
+    from extract_data import initialize_earth_engine
+    from imagery import ee_thumbnail_url
+    initialize_earth_engine()
+    return [ee_thumbnail_url(json.loads(coords_json), d) for d in days]
+
+
+def render_album(coords_json: str, dates: List[date]):
+    """Miniatures en couleurs naturelles, réparties sur la période : l'évolution de la parcelle d'un coup d'œil."""
+    st.markdown(t("img_album"))
+    if not st.session_state.get("album_open") == coords_json:
+        if st.button(t("img_album_btn"), key="album_btn"):
+            ok, wait = allow("images", st.session_state)
+            if not ok:
+                st.warning(t("sec_rate", m=max(1, wait // 60)))
+                return
+            st.session_state.album_open = coords_json
+            st.rerun()
+        return
+    days = tuple(album_dates(dates))
+    try:
+        with st.spinner(t("img_preparing")):
+            urls = _thumbs(coords_json, days)
+    except Exception as e:
+        st.error(t("sec_service", ref=log_incident("album", e)))
+        return
+    per_row = 4
+    for i in range(0, len(days), per_row):
+        cols = st.columns(per_row)
+        for col, d, url in zip(cols, days[i:i + per_row], urls[i:i + per_row]):
+            col.image(url, caption=d.strftime("%d/%m/%Y"))
 
 
 def _map(coordinates: List[List[float]], tile_url: str, name: str, key: str, height: int = 380):
@@ -284,14 +324,14 @@ def _plot_series(df: pd.DataFrame, indices: List[str], day_a: date, day_b: date)
         fig.add_trace(go.Scatter(x=df["date"], y=df[idx], name=idx, mode="lines+markers",
                                  line=dict(color=SERIES_COLORS[idx], width=2), marker=dict(size=5)))
     for day, label in ((day_a, "A"), (day_b, "B")):
-        fig.add_vline(x=pd.Timestamp(day), line=dict(color="#E2E8F0", dash="dot", width=1))
+        fig.add_vline(x=pd.Timestamp(day), line=dict(color="#5C6B61", dash="dot", width=1))
         fig.add_annotation(x=pd.Timestamp(day), y=1.02, yref="paper", text=label, showarrow=False,
-                           font=dict(color="#E2E8F0"))
+                           font=dict(color="#142019"))
     fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#CBD5E1"), hovermode="x unified",
+                      plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#142019"), hovermode="x unified",
                       legend=dict(orientation="h", y=1.15))
-    fig.update_xaxes(gridcolor="#1E2A40")
-    fig.update_yaxes(gridcolor="#1E2A40")
+    fig.update_xaxes(gridcolor="#E3E8E0")
+    fig.update_yaxes(gridcolor="#E3E8E0")
     return fig
 
 
@@ -340,14 +380,15 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
             st.session_state.img_error = t("img_demo")
         elif (end - start).days < 10:
             st.session_state.img_error = t("img_period_short")
+        elif not (rate := allow("images", st.session_state))[0]:
+            st.session_state.img_error = t("sec_rate", m=max(1, rate[1] // 60))
         else:
             with st.spinner(t("img_searching")):
                 try:
                     st.session_state.img_series = _series(coords_json, start, end)
                     st.session_state.img_error = None
-                except Exception as e:  # Earth Engine : authentification, quota, réseau
-                    logger.exception("Imagerie Sentinel-2")
-                    st.session_state.img_error = t("img_unavailable", e=e)
+                except Exception as e:  # Earth Engine : authentification, quota, réseau (détail dans les journaux)
+                    st.session_state.img_error = t("sec_service", ref=log_incident("images", e))
 
     with glossary_slot:  # l'indice de la carte choisie s'ouvre en premier (choix fait plus bas)
         render_glossary(st.session_state.get("img_selected_index"))
@@ -365,6 +406,7 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
 
     dates = [to_date(d) for d in df["date"]]
     st.success(t("img_found", n=len(dates), a=f"{dates[0]:%d/%m/%Y}", b=f"{dates[-1]:%d/%m/%Y}"))
+    render_album(coords_json, dates)
 
     # --- Choix du volet, de la couche et des deux dates -------------------------------------------
     p1, p2 = st.columns([1, 1.3])
@@ -390,8 +432,7 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
         st.warning(t("img_no_history") if layer == "NDVI_ANOM" else str(e))
         return
     except Exception as e:
-        logger.exception("Cartes Sentinel-2")
-        st.error(t("img_maps_error", e=e))
+        st.error(t("sec_service", ref=log_incident("cartes", e)))
         return
 
     spec = LAYERS[layer]

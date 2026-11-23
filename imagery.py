@@ -690,3 +690,29 @@ def zones_kml(zones: List[Dict[str, Any]], title: str = "HydroStress") -> str:
         )
     return ('<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
             f"<name>{escape(title)}</name>{''.join(marks)}</Document></kml>")
+
+
+# ---------------------------------------------------------------------------
+# Album : miniatures en couleurs naturelles de la parcelle
+# ---------------------------------------------------------------------------
+ALBUM_SIZE = 8
+
+
+def album_dates(dates: List[date], n: int = ALBUM_SIZE) -> List[date]:
+    """Jusqu'à n dates réparties sur toute la période, la première et la dernière comprises."""
+    dates = sorted(set(dates))
+    if len(dates) <= n:
+        return dates
+    step = (len(dates) - 1) / (n - 1)
+    return [dates[round(i * step)] for i in range(n)]
+
+
+def ee_thumbnail_url(coordinates: List[List[float]], day: date, size: int = 360) -> str:
+    """Miniature PNG en couleurs naturelles de la date, contour de la parcelle en blanc."""
+    _require_ee()
+    geometry = ee.Geometry.Polygon(coordinates)
+    region = geometry.buffer(120).bounds()
+    rgb = ee_scene(geometry, day).select(["B4", "B3", "B2"]).visualize(min=0.0, max=0.3, gamma=1.2)
+    outline = ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(geometry)]), 1, 2) \
+        .visualize(palette=["ffffff"])
+    return rgb.blend(outline).getThumbURL({"region": region, "dimensions": size, "format": "png"})

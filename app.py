@@ -30,6 +30,7 @@ from farm_ui import render_farm_training
 from contrib_ui import render_contribution
 from i18n import LANGS, RTL_LANGS, get_lang, set_lang, t
 from i18n_pages import translate_error
+from security import admin_password, allow, check_password, log_incident, MAX_ADMIN_ATTEMPTS
 from report_text import (class_label, class_summary, crop_name, index_description, localized_recommendations,
                          status_label, zone_name)
 from imagery_ui import render_imagery
@@ -78,53 +79,76 @@ BRAND = app_setting("HYDROSTRESS_BRAND", "")
 # Style
 # ---------------------------------------------------------------------------
 st.markdown(
-    f"""
+    """
 <style>
-#MainMenu, footer, [data-testid="stSidebarCollapsedControl"] {{visibility:hidden;}}
-[data-testid="stHeader"] {{background:transparent;}}
-.block-container {{padding-top:1.6rem; padding-bottom:3rem; max-width:1400px;}}
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap');
+:root {
+  --paper:#F7F8F3; --surface:#FFFFFF; --ink:#142019; --muted:#5C6B61; --line:#DDE3DA;
+  --palm:#1D6B45; --palm-soft:#E6F0E8; --water:#1C6CA8; --ochre:#9A6412; --ochre-soft:#FBF1DC;
+  --alert:#B42318;
+}
+html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp button, .stApp textarea,
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .hs-hero, .hs-step {
+  font-family:'IBM Plex Sans','IBM Plex Sans Arabic',system-ui,sans-serif;
+}
+#MainMenu, footer, [data-testid="stSidebarCollapsedControl"] {visibility:hidden;}
+[data-testid="stHeader"] {background:transparent;}
+.block-container {padding-top:1.2rem; padding-bottom:3rem; max-width:1320px;}
 
-.hs-hero {{
-  background:linear-gradient(120deg,#0F2A3D 0%,#0B1220 55%,#132A2A 100%);
-  border:1px solid #1E2A40; border-radius:20px; padding:28px 32px; margin-bottom:22px;
-}}
-.hs-hero h1 {{font-size:2.1rem; margin:0; color:#F8FAFC; font-weight:750; letter-spacing:-.02em;}}
-.hs-hero h1 span {{color:{ACCENT};}}
-.hs-hero p {{color:#94A3B8; font-size:1.02rem; margin:.5rem 0 1rem; max-width:860px;}}
-.hs-chip {{display:inline-block; padding:5px 12px; margin:4px 6px 0 0; border-radius:999px;
-  background:rgba(45,212,191,.10); border:1px solid rgba(45,212,191,.35); color:#99F6E4; font-size:.82rem;}}
-.hs-chip.warn {{background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.45); color:#FCD34D;}}
+.hs-top {display:flex; align-items:baseline; gap:.5rem; margin:0 0 2.2rem;}
+.hs-mark {font-size:1.15rem; font-weight:700; color:var(--ink); letter-spacing:-.01em;}
+.hs-mark i {font-style:normal; color:var(--palm);}
+.hs-org {color:var(--muted); font-size:.9rem;}
 
-.hs-steps {{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:22px;}}
-.hs-step {{background:#131C2E; border:1px solid #1E2A40; border-radius:14px; padding:14px 18px;}}
-.hs-step b {{color:{ACCENT}; font-size:.8rem; letter-spacing:.08em;}}
-.hs-step div {{color:#CBD5E1; font-size:.95rem; margin-top:4px;}}
+.hs-hero {margin:0 0 2.4rem; max-width:860px;}
+.hs-hero h1 {font-size:clamp(2.1rem,4.2vw,3.3rem); line-height:1.08; font-weight:600; letter-spacing:-.025em;
+  color:var(--ink); margin:0 0 1rem; padding:0;}
+.hs-hero .lead {font-size:1.08rem; line-height:1.6; color:var(--muted); max-width:68ch; margin:0 0 1.6rem;}
+.hs-strip {max-width:560px; margin:0 0 .9rem;}
+.hs-strip .band {height:14px; border-radius:7px;
+  background:linear-gradient(90deg,#CDB98F 0%,#E6DCAE 22%,#B8CF8E 48%,#5FA266 74%,#1D6B45 100%);}
+.hs-strip .ends {display:flex; justify-content:space-between; font-size:.8rem; color:var(--muted); margin-top:.35rem;}
+.hs-sources {font-size:.85rem; color:var(--muted); margin:0;}
+.hs-tag {display:inline-block; margin-inline-start:.4rem; padding:2px 10px; border-radius:999px; font-size:.78rem;
+  background:var(--palm-soft); color:var(--palm);}
+.hs-tag.warn {background:var(--ochre-soft); color:var(--ochre);}
+.hs-chip {display:inline-block; padding:4px 11px; margin:4px 6px 0 0; border-radius:999px; font-size:.8rem;
+  background:var(--surface); border:1px solid var(--line); color:var(--ink);}
 
-.hs-section {{font-size:.78rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
-  color:#64748B; margin:6px 0 10px;}}
+.hs-steps {list-style:none; display:grid; grid-template-columns:repeat(3,1fr); gap:0; margin:0 0 2.4rem; padding:0;
+  border-top:1px solid var(--line);}
+.hs-step {padding:1rem 1.4rem 0 0; color:var(--ink); font-size:.95rem; line-height:1.5;}
+.hs-step .n {display:inline-flex; width:1.6rem; height:1.6rem; border-radius:50%; align-items:center; justify-content:center;
+  background:var(--palm); color:#fff; font-weight:600; font-size:.85rem; margin-bottom:.5rem;}
 
-.hs-status {{border-radius:16px; padding:20px 24px; border:1px solid #1E2A40; background:#131C2E;}}
-.hs-status .lbl {{font-size:.8rem; color:#94A3B8; text-transform:uppercase; letter-spacing:.1em;}}
-.hs-status .val {{font-size:2.2rem; font-weight:800; line-height:1.2;}}
-.hs-status .sub {{color:#CBD5E1; margin-top:4px;}}
+.hs-section {font-size:1.05rem; font-weight:600; color:var(--ink); margin:.4rem 0 .7rem;}
 
-.hs-kpi {{background:#131C2E; border:1px solid #1E2A40; border-radius:14px; padding:14px 16px; height:100%;}}
-.hs-kpi .k {{color:#94A3B8; font-size:.8rem;}}
-.hs-kpi .v {{color:#F1F5F9; font-size:1.45rem; font-weight:700; margin-top:2px;}}
-.hs-kpi .s {{font-size:.78rem; margin-top:2px;}}
+.hs-status {border-radius:14px; padding:20px 24px; border:1px solid var(--line); background:var(--surface);}
+.hs-status .lbl {font-size:.85rem; color:var(--muted);}
+.hs-status .val {font-size:2.3rem; font-weight:700; line-height:1.15; letter-spacing:-.02em;}
+.hs-status .sub {color:var(--ink); margin-top:4px;}
 
-.hs-parcel {{background:#0F1726; border:1px dashed #334155; border-radius:12px; padding:12px 14px;
-  color:#CBD5E1; font-size:.9rem; margin:6px 0 12px;}}
-.hs-banner {{border-radius:12px; padding:10px 14px; font-size:.9rem; margin-bottom:12px;
-  background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.4); color:#FCD34D;}}
-.hs-hero h1 span.hs-beta {{display:inline-block; margin-left:10px; padding:3px 10px; border-radius:999px; font-size:.75rem;
-  font-weight:700; letter-spacing:.08em; vertical-align:middle; color:#0B1220 !important; background:#FACC15;}}
-.hs-betabar {{background:rgba(250,204,21,.10); border:1px solid rgba(250,204,21,.45); color:#FDE68A;
-  border-radius:12px; padding:10px 16px; margin-bottom:14px; font-size:.9rem;}}
-.hs-foot {{color:#64748B; font-size:.8rem; text-align:center; margin-top:28px;}}
+.hs-kpi {background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; height:100%;}
+.hs-kpi .k {color:var(--muted); font-size:.8rem;}
+.hs-kpi .v {color:var(--ink); font-size:1.4rem; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums;}
+.hs-kpi .s {font-size:.78rem; margin-top:2px;}
 
-div.stButton > button, div.stDownloadButton > button {{border-radius:10px; font-weight:600;}}
-@media (max-width: 900px) {{ .hs-steps {{grid-template-columns:1fr;}} }}
+.hs-parcel {background:var(--palm-soft); border-radius:10px; padding:12px 14px; color:var(--ink); font-size:.9rem;
+  margin:6px 0 12px; line-height:1.55;}
+.hs-banner {border-radius:10px; padding:10px 14px; font-size:.9rem; margin-bottom:12px;
+  background:var(--ochre-soft); color:var(--ochre);}
+.hs-hero h1 span.hs-beta {display:inline-block; margin-inline-start:10px; padding:3px 10px; border-radius:999px;
+  font-size:.75rem; font-weight:600; vertical-align:middle; color:var(--ink) !important; background:#F2D16B;}
+.hs-betabar {background:var(--ochre-soft); color:var(--ochre); border-radius:10px; padding:10px 16px;
+  margin-bottom:14px; font-size:.9rem;}
+.hs-foot {color:var(--muted); font-size:.8rem; text-align:center; margin-top:2.5rem; padding-top:1.2rem;
+  border-top:1px solid var(--line);}
+
+div.stButton > button, div.stDownloadButton > button, div.stLinkButton > a {border-radius:8px; font-weight:600;}
+button:focus-visible, a:focus-visible, input:focus-visible {outline:2px solid var(--water) !important; outline-offset:2px;}
+[data-testid="stExpander"] details {border-radius:10px; border-color:var(--line); background:var(--surface);}
+@media (max-width: 900px) { .hs-steps {grid-template-columns:1fr;} .hs-step {padding-right:0;} }
+@media (prefers-reduced-motion: reduce) { * {animation:none !important; transition:none !important;} }
 </style>
 """,
     unsafe_allow_html=True,
@@ -206,32 +230,28 @@ def model_origin(meta) -> str:
 
 def hero(predictor):
     meta = getattr(predictor, "metadata", None) or {}
-    synthetic = meta.get("data_source") == "synthetic"
-    chips = [
-        "🛰️ Sentinel-2 · 10 m", t("chip_chirps"), t("chip_era5"),
-        "🤖 Random Forest", t("chip_maps"), t("chip_zones", n=len(ZONES)),
-    ]
-    chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
-    if synthetic:
-        chips_html += f"<span class='hs-chip warn'>{t('chip_synthetic')}</span>"
+    tag = ""
+    if meta.get("data_source") == "synthetic":
+        tag = f"<span class='hs-tag warn'>{t('chip_synthetic')}</span>"
     elif str(meta.get("data_source", "")).startswith("terrain:"):
-        chips_html += f"<span class='hs-chip'>{t('chip_real', origin=model_origin(meta))}</span>"
+        tag = f"<span class='hs-tag'>{t('chip_real', origin=model_origin(meta))}</span>"
     beta_badge = "<span class='hs-beta'>BÊTA</span>" if IS_BETA else ""
     by = f"{BRAND} · " if BRAND else ""
     beta_bar = f"<div class='hs-betabar'>{t('beta_bar', by=by)}</div>" if IS_BETA else ""
+    org = f"<span class='hs-org'>· {BRAND}</span>" if BRAND else ""
+    steps = "".join(f"<li class='hs-step'><span class='n'>{n}</span><div>{t(f'step{n}')}</div></li>" for n in (1, 2, 3))
     st.markdown(
         f"""
 {beta_bar}
-<div class="hs-hero">
-  <h1>💧 HydroStress <span>Maroc</span>{beta_badge}</h1>
-  <p>{t('hero_intro')}</p>
-  {chips_html}
-</div>
-<div class="hs-steps">
-  <div class="hs-step"><b>{t('step', n=1)}</b><div>{t('step1')}</div></div>
-  <div class="hs-step"><b>{t('step', n=2)}</b><div>{t('step2')}</div></div>
-  <div class="hs-step"><b>{t('step', n=3)}</b><div>{t('step3')}</div></div>
-</div>
+<div class="hs-top"><span class="hs-mark">HydroStress <i>Maroc</i></span>{org}</div>
+<section class="hs-hero">
+  <h1>{t('hero_title')}{beta_badge}</h1>
+  <p class="lead">{t('hero_intro')}</p>
+  <div class="hs-strip" aria-hidden="true"><div class="band"></div>
+    <div class="ends"><span>{t('strip_low')}</span><span>{t('strip_high')}</span></div></div>
+  <p class="hs-sources">{t('hero_sources')}{tag}</p>
+</section>
+<ol class="hs-steps">{steps}</ol>
 """,
         unsafe_allow_html=True,
     )
@@ -266,8 +286,8 @@ def build_map(center, zoom):
         draw_options={
             "polyline": False, "circle": False, "circlemarker": False, "marker": False,
             "polygon": {"allowIntersection": False, "showArea": True,
-                        "shapeOptions": {"color": "#F59E0B"}},
-            "rectangle": {"showArea": True, "shapeOptions": {"color": "#F59E0B"}},
+                        "shapeOptions": {"color": "#F2D16B"}},
+            "rectangle": {"showArea": True, "shapeOptions": {"color": "#F2D16B"}},
         },
         edit_options={"edit": False, "remove": True},
     ).add_to(m)
@@ -282,15 +302,15 @@ def map_legend():
     """Sous la carte : ce que sont les points colorés (localités de référence, une couleur par zone)."""
     lang = get_lang()
     chips = "".join(
-        f"<span class='hs-chip' style='border-color:{color};color:#E2E8F0;background:transparent'>"
-        f"<span style='color:{color}'>●</span> {zone_name(zid, zone['name'], lang)}</span>"
+        f"<span class='hs-chip'><span style='color:{color};-webkit-text-stroke:1px rgba(20,32,25,.35)'>●</span> "
+        f"{zone_name(zid, zone['name'], lang)}</span>"
         for color, (zid, zone) in zip(ZONE_COLORS, ZONES.items())
     )
-    st.markdown(f"<div style='color:#94A3B8;font-size:.85rem;margin:6px 0 4px'>{t('map_legend')}</div>{chips}",
+    st.markdown(f"<div style='color:var(--muted);font-size:.85rem;line-height:1.5;margin:8px 0 4px'>{t('map_legend')}</div>{chips}",
                 unsafe_allow_html=True)
 
 
-def kpi(label, value, sub="", color="#94A3B8"):
+def kpi(label, value, sub="", color="var(--muted)"):
     st.markdown(
         f"<div class='hs-kpi'><div class='k'>{label}</div><div class='v'>{value}</div>"
         f"<div class='s' style='color:{color}'>{sub}</div></div>",
@@ -298,7 +318,7 @@ def kpi(label, value, sub="", color="#94A3B8"):
     )
 
 
-STATUS_COLORS = {"healthy": "#22C55E", "low": "#EF4444", "high": "#F59E0B", "unknown": "#94A3B8"}
+STATUS_COLORS = {"healthy": "#1D6B45", "low": "#B42318", "high": "#9A6412", "unknown": "#5C6B61"}
 
 
 def plot_probabilities(probs):
@@ -306,11 +326,11 @@ def plot_probabilities(probs):
     values = [probs["normal"], probs["moderate"], probs["severe"]]
     fig = go.Figure(go.Bar(
         x=values, y=labels, orientation="h",
-        marker_color=["#22C55E", "#F59E0B", "#EF4444"],
+        marker_color=["#1D6B45", "#C98A1B", "#B42318"],
         text=[f"{v:.1f} %" for v in values], textposition="outside", cliponaxis=False,
     ))
     fig.update_layout(
-        template="plotly_dark", height=210, margin=dict(l=10, r=40, t=10, b=10),
+        template="plotly_white", height=210, margin=dict(l=10, r=40, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(range=[0, 100], showgrid=False, visible=False), yaxis=dict(autorange="reversed"),
     )
@@ -321,19 +341,19 @@ def plot_weather(chirps: pd.DataFrame, era5: pd.DataFrame):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     if not chirps.empty:
         fig.add_trace(go.Bar(x=chirps["date"], y=chirps["precipitation_mm"], name=t("pl_rain"),
-                             marker_color="#38BDF8", opacity=.8), secondary_y=False)
+                             marker_color="#1C6CA8", opacity=.75), secondary_y=False)
     if not era5.empty:
         fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_max_c"], name=t("pl_tmax"),
-                                 line=dict(color="#F97316", width=2)), secondary_y=True)
+                                 line=dict(color="#B42318", width=2)), secondary_y=True)
         fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name=t("pl_tmean"),
-                                 line=dict(color="#FACC15", width=2, dash="dot")), secondary_y=True)
+                                 line=dict(color="#C98A1B", width=2, dash="dot")), secondary_y=True)
     fig.update_layout(
-        template="plotly_dark", height=300, margin=dict(l=10, r=10, t=10, b=10),
+        template="plotly_white", height=300, margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", y=1.12, x=0), bargap=.25,
     )
     fig.update_yaxes(title_text="mm", secondary_y=False, showgrid=False)
-    fig.update_yaxes(title_text="°C", secondary_y=True, gridcolor="#1E2A40")
+    fig.update_yaxes(title_text="°C", secondary_y=True, gridcolor="#E3E8E0")
     return fig
 
 
@@ -343,6 +363,10 @@ def plot_weather(chirps: pd.DataFrame, era5: pd.DataFrame):
 def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bool):
     """Extraction + prédiction + rapport, résultat stocké dans la session."""
     st.session_state.error = None
+    ok, wait = allow("analysis", st.session_state)
+    if not ok:
+        st.session_state.error = t("sec_rate", m=max(1, wait // 60))
+        return
     with st.status(t("an_running"), expanded=True) as status:
         try:
             st.write(t("an_validate"))
@@ -376,12 +400,8 @@ def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bo
         except (DataUnavailableError, ValueError) as e:
             st.session_state.error = translate_error(str(e), get_lang())
             status.update(label=t("an_failed"), state="error", expanded=False)
-        except Exception as e:
-            logger.exception("Erreur d'analyse")
-            msg = str(e)
-            if "earthengine" in msg.lower() or "credentials" in msg.lower() or "not found" in msg.lower():
-                msg += t("an_ee_hint")
-            st.session_state.error = t("an_error", msg=msg)
+        except Exception as e:  # détail dans les journaux du serveur, jamais à l'écran
+            st.session_state.error = t("sec_service", ref=log_incident("analyse", e))
             status.update(label=t("an_failed"), state="error", expanded=False)
 
 
@@ -411,7 +431,7 @@ def render_report(result):
 <div class="lbl">{t('rp_level')}</div>
 <div class="val" style="color:{style['color']}">{class_label(idx, lang)}</div>
 <div class="sub">{class_summary(idx, lang)}</div>
-<div class="sub" style="color:#94A3B8;margin-top:10px;font-size:.88rem">
+<div class="sub" style="color:var(--muted);margin-top:10px;font-size:.88rem">
 {conf_line}</div></div>""",
             unsafe_allow_html=True,
         )
@@ -493,14 +513,18 @@ def render_station_validation(report, data):
             st.info(t("st_demo"))
             return
         if st.button(t("st_btn"), key="station_btn"):
+            ok, wait = allow("station", st.session_state)
+            if not ok:
+                st.warning(t("sec_rate", m=max(1, wait // 60)))
+                return
             lat, lon = report["parcel"]["centroid"]
             with st.spinner(t("st_searching")):
                 try:
                     st.session_state.station = validate_analysis(lat, lon, data["chirps_series"],
                                                                  data["era5_series"])
                 except Exception as e:
-                    logger.exception("Validation station")
-                    st.session_state.station = {"station": None, "message": t("st_unavailable", e=e)}
+                    st.session_state.station = {"station": None,
+                                                "message": t("sec_service", ref=log_incident("station NOAA", e))}
         res = st.session_state.station
         if not res:
             return
@@ -527,11 +551,11 @@ def render_station_validation(report, data):
         series, era5 = res["series"], data["era5_series"]
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=series["date"], y=series["temperature_c"], name=t("st_series_station"),
-                                 line=dict(color="#E2E8F0", width=2)))
+                                 line=dict(color="#142019", width=2)))
         if not era5.empty:
             fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name=t("st_series_era5"),
-                                     line=dict(color="#FACC15", width=2, dash="dot")))
-        fig.update_layout(template="plotly_dark", height=260, margin=dict(l=10, r=10, t=10, b=10),
+                                     line=dict(color="#C98A1B", width=2, dash="dot")))
+        fig.update_layout(template="plotly_white", height=260, margin=dict(l=10, r=10, t=10, b=10),
                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                           legend=dict(orientation="h", y=1.15, x=0), yaxis_title="°C")
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
@@ -616,6 +640,35 @@ def render_simulation(predictor):
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
+def render_admin_area():
+    """
+    Entraînement sur une ferme : réservé à l'administrateur (registres et positions de fermes, quota Earth Engine).
+    Visible seulement avec ?admin=1 dans l'adresse ET un mot de passe HYDROSTRESS_ADMIN_PASSWORD dans les Secrets.
+    """
+    expected = admin_password(app_setting)
+    if not expected or st.query_params.get("admin") != "1":
+        return
+    with st.expander(t("adm_title"), expanded=not st.session_state.get("admin_ok")):
+        if not st.session_state.get("admin_ok"):
+            if st.session_state.get("admin_fails", 0) >= MAX_ADMIN_ATTEMPTS:
+                st.error(t("adm_locked"))
+                return
+            with st.form("admin_login"):
+                given = st.text_input(t("adm_password"), type="password")
+                if st.form_submit_button(t("adm_open")):
+                    if check_password(given, expected):
+                        st.session_state.admin_ok = True
+                        st.rerun()
+                    st.session_state.admin_fails = st.session_state.get("admin_fails", 0) + 1
+                    st.error(t("adm_wrong"))
+            return
+        if st.button(t("adm_logout"), key="admin_logout"):
+            st.session_state.admin_ok = False
+            st.rerun()
+        st.markdown(f"**{t('exp_farm')}**")
+        render_farm_training()
+
+
 def language_switcher():
     """Choix de la langue (Français, العربية, English), mémorisé dans l'URL (?lang=ar) pour le partage."""
     if "lang" not in st.session_state:
@@ -749,8 +802,7 @@ def main():
         render_model_section(predictor)
     with st.expander(t("exp_sim")):
         render_simulation(predictor)
-    with st.expander(t("exp_farm")):
-        render_farm_training()
+    render_admin_area()
 
     owner = f"{BRAND} · " if BRAND else ""
     stage = t("footer_beta") if IS_BETA else ""

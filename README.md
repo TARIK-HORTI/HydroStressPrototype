@@ -56,6 +56,7 @@ HydroStressPrototype/
 ├── predict.py                 # Prédiction, interprétation, recommandations locales
 ├── i18n.py / imagery_text.py  # Langues de l'interface : français, arabe (droite à gauche), anglais
 ├── imagery.py / imagery_ui.py # Cartes satellite : stress hydrique, état sanitaire, développement, comparaison de dates
+├── security.py                # Limites d'usage, espace administrateur, erreurs sans détail technique
 ├── app.py                     # Tableau de bord Streamlit (une seule page)
 ├── report.py                  # Rapport d'analyse (export HTML)
 ├── demo.py                    # Données de démonstration (sans Earth Engine)
@@ -384,6 +385,21 @@ automatiquement. Le compte de service de Cloud Run doit pouvoir lire le secret
 
 Sur Streamlit Cloud, les mêmes réglages peuvent être ajoutés dans *Secrets*
 (ex. `HYDROSTRESS_BRAND = "Wahatech"`).
+
+## 🔒 Sécurité
+
+- **Aucun secret dans le dépôt** : clé Earth Engine, jeton GitHub des contributions et mot de passe administrateur
+  vivent dans les *Secrets* Streamlit (ou Secret Manager sur Cloud Run). L'historique Git a été vérifié.
+- **Erreurs** : les visiteurs voient un message court avec une référence (`sec_service`) ; le détail technique
+  part dans les journaux du serveur (`security.log_incident`). `client.showErrorDetails = "none"` empêche
+  Streamlit d'afficher une trace de pile, `toolbarMode = "viewer"` retire le menu développeur.
+- **Quota Earth Engine** : chaque session est limitée (`security.RATE_LIMITS`, ex. 15 analyses et 20 recherches
+  d'images par heure).
+- **Espace administrateur** : l'entraînement sur une ferme (registres, positions, quota) n'est plus public. Il
+  apparaît seulement avec `?admin=1` dans l'adresse **et** le secret
+  `HYDROSTRESS_ADMIN_PASSWORD = "…"` (12 caractères minimum ; 5 essais par session). Sans ce secret, il n'existe pas.
+- **Fichiers envoyés** : 25 Mo par fichier (`server.maxUploadSize`), noms nettoyés, stockage privé.
+- **Protection XSRF** de Streamlit activée.
 
 ## 🐛 Dépannage
 

@@ -1,13 +1,20 @@
 [theme]
-base = "dark"
-primaryColor = "#2DD4BF"
-backgroundColor = "#0B1220"
-secondaryBackgroundColor = "#131C2E"
-textColor = "#E2E8F0"
+base = "light"
+primaryColor = "#1D6B45"
+backgroundColor = "#F7F8F3"
+secondaryBackgroundColor = "#EEF2EC"
+textColor = "#142019"
 font = "sans serif"
 
 [client]
-toolbarMode = "minimal"
+# Visiteurs : pas de menu développeur ni de trace d'erreur à l'écran (les détails restent dans les journaux)
+toolbarMode = "viewer"
+showErrorDetails = "none"
 
 [server]
 headless = true
+enableXsrfProtection = true
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false

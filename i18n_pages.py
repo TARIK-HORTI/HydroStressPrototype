@@ -413,6 +413,35 @@ PAGES: Dict[str, Dict[str, str]] = {
                     "en": "Invalid polygon: {n} vertex(es), minimum 3."},
     "er_self": {"fr": "Géométrie invalide : le polygone s'auto-intersecte.", "ar": "شكل غير صالح: المضلّع يتقاطع مع نفسه.",
                 "en": "Invalid geometry: the polygon intersects itself."},
+    # --- Sécurité, design ------------------------------------------------------------------------
+    "sec_rate": {"fr": "Trop de demandes en peu de temps. Réessayez dans {m} min.",
+                 "ar": "طلبات كثيرة في وقت قصير. أعد المحاولة بعد {m} دقيقة.",
+                 "en": "Too many requests in a short time. Try again in {m} min."},
+    "sec_service": {"fr": "Le service satellite n'a pas répondu. Réessayez dans quelques minutes (référence {ref}).",
+                    "ar": "لم تستجب خدمة الأقمار الصناعية. أعد المحاولة بعد بضع دقائق (المرجع {ref}).",
+                    "en": "The satellite service did not respond. Try again in a few minutes (reference {ref})."},
+    "sec_send_failed": {"fr": "L'envoi n'a pas abouti. Réessayez plus tard ou contactez-nous (référence {ref}).",
+                        "ar": "لم يكتمل الإرسال. أعد المحاولة لاحقًا أو تواصل معنا (المرجع {ref}).",
+                        "en": "Sending failed. Try again later or contact us (reference {ref})."},
+    "adm_title": {"fr": "🔐 Espace administrateur", "ar": "🔐 فضاء المسؤول", "en": "🔐 Admin area"},
+    "adm_password": {"fr": "Mot de passe administrateur", "ar": "كلمة سر المسؤول", "en": "Admin password"},
+    "adm_open": {"fr": "Ouvrir", "ar": "فتح", "en": "Open"},
+    "adm_wrong": {"fr": "Mot de passe incorrect.", "ar": "كلمة السر غير صحيحة.", "en": "Wrong password."},
+    "adm_locked": {"fr": "Trop d'essais : l'espace administrateur est verrouillé pour cette session.",
+                   "ar": "محاولات كثيرة: فضاء المسؤول مقفل في هذه الجلسة.",
+                   "en": "Too many attempts: the admin area is locked for this session."},
+    "adm_logout": {"fr": "Fermer l'espace administrateur", "ar": "إغلاق فضاء المسؤول", "en": "Close the admin area"},
+    "hero_title": {"fr": "L'eau de vos parcelles, vue de l'espace", "ar": "ماء ضيعتك، كما يُرى من الفضاء",
+                   "en": "Your fields' water, seen from space"},
+    "hero_sources": {"fr": "Données ouvertes et gratuites : Copernicus Sentinel-2, CHIRPS, ERA5-Land",
+                     "ar": "معطيات مفتوحة ومجانية: Copernicus Sentinel-2، CHIRPS، ERA5-Land",
+                     "en": "Open, free data: Copernicus Sentinel-2, CHIRPS, ERA5-Land"},
+    "strip_low": {"fr": "sol nu", "ar": "تربة عارية", "en": "bare soil"},
+    "strip_high": {"fr": "végétation vigoureuse", "ar": "نبات قوي", "en": "vigorous vegetation"},
+    "img_album": {"fr": "**Album de la parcelle** · images réelles, de la plus ancienne à la plus récente",
+                  "ar": "**ألبوم القطعة** · صور حقيقية، من الأقدم إلى الأحدث",
+                  "en": "**Plot album** · real images, oldest to newest"},
+    "img_album_btn": {"fr": "🖼️ Afficher l'album", "ar": "🖼️ عرض الألبوم", "en": "🖼️ Show the album"},
 }
 
 
@@ -438,4 +467,3 @@ def translate_error(msg: str, lang: str) -> str:
             entry = PAGES[key]
             return (entry.get(lang) or entry["fr"]).format(**m.groupdict())
     return msg
-
