@@ -313,6 +313,8 @@ IMAGERY_TEXT: Dict[str, Dict[str, str]] = {
     "zn_area_m2": {"fr": "{v} m²", "ar": "{v} م²", "en": "{v} m²"},
     "zn_area_ha": {"fr": "{v} ha", "ar": "{v} هكتار", "en": "{v} ha"},
     "zn_delta": {"fr": "écart", "ar": "الفرق", "en": "change"},
+    "zn_delta_rel": {"fr": "écart par rapport au reste de la parcelle", "ar": "الفرق مقارنة بباقي القطعة",
+                     "en": "change compared with the rest of the plot"},
     "zn_cat_water": {"fr": "Perte d'eau", "ar": "فقدان الماء", "en": "Water loss"},
     "zn_cat_health": {"fr": "Chlorophylle / jaunissement", "ar": "الكلوروفيل / الاصفرار", "en": "Chlorophyll / yellowing"},
     "zn_cat_decline": {"fr": "Eau + chlorophylle", "ar": "الماء + الكلوروفيل", "en": "Water + chlorophyll"},
