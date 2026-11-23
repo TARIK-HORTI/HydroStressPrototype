@@ -382,4 +382,60 @@ PAGES: Dict[str, Dict[str, str]] = {
     "fm_dl_model": {"fr": "⬇️ Télécharger le modèle (zip)", "ar": "⬇️ تحميل النموذج (zip)", "en": "⬇️ Download the model (zip)"},
     "fm_dl_model_help": {"fr": "Envoyez ce fichier pour qu'il devienne le modèle de l'application.",
                          "ar": "أرسل هذا الملف ليصبح نموذج التطبيق.", "en": "Send this file so it becomes the app's model."},
+    # --- Restes : bandeau, carte, erreurs de données, origine du modèle --------------------------
+    "chip_chirps": {"fr": "🌧️ CHIRPS · pluie quotidienne", "ar": "🌧️ CHIRPS · الأمطار اليومية", "en": "🌧️ CHIRPS · daily rain"},
+    "chip_era5": {"fr": "🌡️ ERA5-Land · T° & humidité", "ar": "🌡️ ERA5-Land · الحرارة والرطوبة",
+                  "en": "🌡️ ERA5-Land · temp. & humidity"},
+    "map_satellite": {"fr": "Satellite", "ar": "قمر صناعي", "en": "Satellite"},
+    "map_plan": {"fr": "Plan", "ar": "خريطة", "en": "Map"},
+    "map_places": {"fr": "Noms des lieux", "ar": "أسماء الأماكن", "en": "Place names"},
+    "map_roads": {"fr": "Routes", "ar": "الطرق", "en": "Roads"},
+    "map_search": {"fr": "Chercher un lieu (ex. Errachidia, Chorfa M'Daghra)…", "ar": "ابحث عن مكان (مثلًا: الرشيدية)…",
+                   "en": "Search a place (e.g. Errachidia, Chorfa M'Daghra)…"},
+    "origin_almond_errachidia": {"fr": "ferme d'amandiers à Errachidia", "ar": "ضيعة لوز بالرشيدية",
+                                 "en": "an almond farm in Errachidia"},
+    "er_incomplete": {
+        "fr": "{source} : {n} jour(s) disponibles sur {m} attendus. Les données récentes peuvent ne pas être encore "
+              "publiées : choisissez une date d'analyse plus ancienne.",
+        "ar": "{source}: {n} يوم متوفر من أصل {m}. قد لا تكون المعطيات الحديثة منشورة بعد: اختر تاريخ تحليل أقدم.",
+        "en": "{source}: {n} day(s) available out of {m} expected. Recent data may not be published yet: choose an "
+              "earlier analysis date.",
+    },
+    "er_s2_clouds": {"fr": "Sentinel-2 : pas assez d'images sans nuages sur la parcelle, même sur 60 jours.",
+                     "ar": "Sentinel-2: لا توجد صور كافية بدون سحب على القطعة، حتى على 60 يومًا.",
+                     "en": "Sentinel-2: not enough cloud-free images over the plot, even over 60 days."},
+    "er_outside": {"fr": "Parcelle hors zone : le point ({lat}, {lon}) est en dehors du Maroc.",
+                   "ar": "القطعة خارج المنطقة: النقطة ({lat}، {lon}) خارج المغرب.",
+                   "en": "Plot out of range: the point ({lat}, {lon}) is outside Morocco."},
+    "er_too_big": {"fr": "Parcelle trop grande : {a} km² (max {m} km²).", "ar": "القطعة كبيرة جدًا: {a} كلم² (الحد الأقصى {m} كلم²).",
+                   "en": "Plot too large: {a} km² (max {m} km²)."},
+    "er_vertices": {"fr": "Polygone invalide : {n} sommet(s), minimum 3.", "ar": "مضلّع غير صالح: {n} رأس، الحد الأدنى 3.",
+                    "en": "Invalid polygon: {n} vertex(es), minimum 3."},
+    "er_self": {"fr": "Géométrie invalide : le polygone s'auto-intersecte.", "ar": "شكل غير صالح: المضلّع يتقاطع مع نفسه.",
+                "en": "Invalid geometry: the polygon intersects itself."},
 }
+
+
+# Messages d'erreur des modules de données (en français) -> traduction
+_ERROR_PATTERNS = [
+    (r"^(?P<source>[\w\-]+) : (?P<n>\d+) jour\(s\) disponibles sur (?P<m>\d+) attendus", "er_incomplete"),
+    (r"^Sentinel-2 : pas assez d'images sans nuages", "er_s2_clouds"),
+    (r"^Parcelle hors zone : le point \((?P<lat>[-\d.]+), (?P<lon>[-\d.]+)\)", "er_outside"),
+    (r"^Parcelle trop grande : (?P<a>[\d.]+) km² \(max (?P<m>[\d.]+) km²\)", "er_too_big"),
+    (r"^Polygone invalide : (?P<n>\d+) sommet", "er_vertices"),
+    (r"^Géométrie invalide : le polygone s'auto-intersecte", "er_self"),
+]
+
+
+def translate_error(msg: str, lang: str) -> str:
+    """Traduit un message d'erreur connu des modules de données ; les autres restent tels quels."""
+    import re
+    if lang == "fr":
+        return msg
+    for pattern, key in _ERROR_PATTERNS:
+        m = re.match(pattern, msg)
+        if m:
+            entry = PAGES[key]
+            return (entry.get(lang) or entry["fr"]).format(**m.groupdict())
+    return msg
+

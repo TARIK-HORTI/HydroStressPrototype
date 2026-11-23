@@ -29,6 +29,7 @@ from demo import make_demo_extraction
 from farm_ui import render_farm_training
 from contrib_ui import render_contribution
 from i18n import LANGS, RTL_LANGS, get_lang, set_lang, t
+from i18n_pages import translate_error
 from report_text import (class_label, class_summary, crop_name, index_description, localized_recommendations,
                          status_label, zone_name)
 from imagery_ui import render_imagery
@@ -151,6 +152,30 @@ def get_predictor(version: str = ""):
         return e
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def latest_weather_date():
+    """
+    Date d'analyse proposée par défaut : le dernier jour publié à la fois par CHIRPS et par ERA5-Land
+    (CHIRPS est mis en ligne avec plusieurs semaines de retard). Sans Earth Engine : il y a 60 jours.
+    """
+    fallback = (datetime.now() - timedelta(days=60)).date()
+    try:
+        import ee
+        from extract_data import CHIRPS_COLLECTION, ERA5_COLLECTION, initialize_earth_engine
+        initialize_earth_engine()
+        since = (datetime.now() - timedelta(days=150)).strftime("%Y-%m-%d")
+        last = [ee.ImageCollection(c).filterDate(since, datetime.now().strftime("%Y-%m-%d"))
+                .aggregate_max("system:time_start") for c in (CHIRPS_COLLECTION, ERA5_COLLECTION)]
+        ms = ee.List(last).getInfo()
+        if not all(ms):
+            return fallback
+        latest = pd.Timestamp(min(ms), unit="ms").date()
+        return min(latest, (datetime.now() - timedelta(days=5)).date())
+    except Exception:
+        logger.exception("Dernière date météo disponible")
+        return fallback
+
+
 def get_pipeline() -> DataPipeline:
     """Non mis en cache : les jetons Earth Engine expirent."""
     return DataPipeline()
@@ -174,7 +199,8 @@ def model_origin(meta) -> str:
     if src == "synthetic":
         return "Synthétiques"
     if src.startswith("terrain:"):
-        return meta.get("origin_label") or f"ferme {src.split(':', 1)[1]}"
+        label = meta.get("origin_label") or f"ferme {src.split(':', 1)[1]}"
+        return t("origin_almond_errachidia") if label == "ferme d'amandiers à Errachidia" else label
     return src or "—"
 
 
@@ -182,7 +208,7 @@ def hero(predictor):
     meta = getattr(predictor, "metadata", None) or {}
     synthetic = meta.get("data_source") == "synthetic"
     chips = [
-        "🛰️ Sentinel-2 · 10 m", "🌧️ CHIRPS · pluie quotidienne", "🌡️ ERA5-Land · T° & humidité",
+        "🛰️ Sentinel-2 · 10 m", t("chip_chirps"), t("chip_era5"),
         "🤖 Random Forest", t("chip_maps"), t("chip_zones", n=len(ZONES)),
     ]
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
@@ -219,17 +245,17 @@ def build_map(center, zoom):
                    min_zoom=5, max_bounds=True, min_lat=19, max_lat=37.5, min_lon=-19, max_lon=1)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri World Imagery", name="Satellite",
+        attr="Esri World Imagery", name=t("map_satellite"),
     ).add_to(m)
-    folium.TileLayer("OpenStreetMap", name="Plan", show=False).add_to(m)   # Satellite reste la vue par défaut
+    folium.TileLayer("OpenStreetMap", name=t("map_plan"), show=False).add_to(m)   # Satellite reste la vue par défaut
     # Noms des villes, villages et frontières par-dessus l'image satellite (affichés par défaut)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri Boundaries & Places", name="Noms des lieux", overlay=True, control=True, show=True,
+        attr="Esri Boundaries & Places", name=t("map_places"), overlay=True, control=True, show=True,
     ).add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri Transportation", name="Routes", overlay=True, control=True, show=False,
+        attr="Esri Transportation", name=t("map_roads"), overlay=True, control=True, show=False,
     ).add_to(m)
     for color, zone in zip(ZONE_COLORS, ZONES.values()):
         for place, (lat, lon) in zone["places"].items():
@@ -247,7 +273,7 @@ def build_map(center, zoom):
     ).add_to(m)
     # Recherche d'un lieu (ville, douar, commune) pour se déplacer vite jusqu'à sa ferme
     Geocoder(collapsed=False, position="topleft", add_marker=False,
-             placeholder="Chercher un lieu (ex. Errachidia, Chorfa M'Daghra)…").add_to(m)
+             placeholder=t("map_search")).add_to(m)
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
     return m
 
@@ -348,7 +374,7 @@ def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bo
             st.session_state.station = None
             status.update(label=t("an_done"), state="complete", expanded=False)
         except (DataUnavailableError, ValueError) as e:
-            st.session_state.error = str(e)
+            st.session_state.error = translate_error(str(e), get_lang())
             status.update(label=t("an_failed"), state="error", expanded=False)
         except Exception as e:
             logger.exception("Erreur d'analyse")
@@ -642,7 +668,7 @@ def main():
         c_date, c_win = st.columns(2)
         with c_date:
             analysis_date = st.date_input(
-                t("analysis_date"), value=datetime.now() - timedelta(days=10),
+                t("analysis_date"), value=latest_weather_date(),
                 min_value=datetime(2017, 4, 1), max_value=datetime.now() - timedelta(days=5),
                 help=t("analysis_date_help"),
             )
@@ -688,7 +714,7 @@ def main():
                                zone=zone_name(zone_id, ZONES[zone_id]["name"], get_lang()), near=near, far=far)
                 st.markdown(f"<div class='hs-parcel'>{ready_html}</div>", unsafe_allow_html=True)
             except ValueError as e:
-                parcel_error = str(e)
+                parcel_error = translate_error(str(e), get_lang())
                 st.markdown(f"<div class='hs-banner'>❌ {parcel_error}</div>", unsafe_allow_html=True)
         else:
             st.markdown(f"<div class='hs-parcel'>{t('parcel_draw')}</div>", unsafe_allow_html=True)
