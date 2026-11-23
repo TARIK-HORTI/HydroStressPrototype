@@ -29,6 +29,8 @@ from demo import make_demo_extraction
 from farm_ui import render_farm_training
 from contrib_ui import render_contribution
 from i18n import LANGS, RTL_LANGS, get_lang, set_lang, t
+from report_text import (class_label, class_summary, crop_name, index_description, localized_recommendations,
+                         status_label, zone_name)
 from imagery_ui import render_imagery
 from extract_data import (
     DataPipeline,
@@ -250,6 +252,18 @@ def build_map(center, zoom):
     return m
 
 
+def map_legend():
+    """Sous la carte : ce que sont les points colorés (localités de référence, une couleur par zone)."""
+    lang = get_lang()
+    chips = "".join(
+        f"<span class='hs-chip' style='border-color:{color};color:#E2E8F0;background:transparent'>"
+        f"<span style='color:{color}'>●</span> {zone_name(zid, zone['name'], lang)}</span>"
+        for color, (zid, zone) in zip(ZONE_COLORS, ZONES.items())
+    )
+    st.markdown(f"<div style='color:#94A3B8;font-size:.85rem;margin:6px 0 4px'>{t('map_legend')}</div>{chips}",
+                unsafe_allow_html=True)
+
+
 def kpi(label, value, sub="", color="#94A3B8"):
     st.markdown(
         f"<div class='hs-kpi'><div class='k'>{label}</div><div class='v'>{value}</div>"
@@ -262,7 +276,7 @@ STATUS_COLORS = {"healthy": "#22C55E", "low": "#EF4444", "high": "#F59E0B", "unk
 
 
 def plot_probabilities(probs):
-    labels = ["Normal", "Modéré", "Sévère"]
+    labels = [class_label(i, get_lang()) for i in range(3)]
     values = [probs["normal"], probs["moderate"], probs["severe"]]
     fig = go.Figure(go.Bar(
         x=values, y=labels, orientation="h",
@@ -280,12 +294,12 @@ def plot_probabilities(probs):
 def plot_weather(chirps: pd.DataFrame, era5: pd.DataFrame):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     if not chirps.empty:
-        fig.add_trace(go.Bar(x=chirps["date"], y=chirps["precipitation_mm"], name="Pluie (mm)",
+        fig.add_trace(go.Bar(x=chirps["date"], y=chirps["precipitation_mm"], name=t("pl_rain"),
                              marker_color="#38BDF8", opacity=.8), secondary_y=False)
     if not era5.empty:
-        fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_max_c"], name="T° max",
+        fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_max_c"], name=t("pl_tmax"),
                                  line=dict(color="#F97316", width=2)), secondary_y=True)
-        fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name="T° moyenne",
+        fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name=t("pl_tmean"),
                                  line=dict(color="#FACC15", width=2, dash="dot")), secondary_y=True)
     fig.update_layout(
         template="plotly_dark", height=300, margin=dict(l=10, r=10, t=10, b=10),
@@ -303,22 +317,22 @@ def plot_weather(chirps: pd.DataFrame, era5: pd.DataFrame):
 def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bool):
     """Extraction + prédiction + rapport, résultat stocké dans la session."""
     st.session_state.error = None
-    with st.status("Analyse de la parcelle en cours…", expanded=True) as status:
+    with st.status(t("an_running"), expanded=True) as status:
         try:
-            st.write("Validation de la parcelle")
+            st.write(t("an_validate"))
             poly = validate_geometry(coordinates)
             date_str = analysis_date.strftime("%Y-%m-%d")
             if demo:
-                st.write("Génération des données de démonstration")
+                st.write(t("an_demo"))
                 data = make_demo_extraction(coordinates, date_str, lookback)
             else:
-                st.write("Connexion à Google Earth Engine")
+                st.write(t("an_connect"))
                 pipeline = get_pipeline()
-                st.write("Extraction Sentinel-2, CHIRPS et ERA5-Land (30 à 90 s)")
+                st.write(t("an_extract"))
                 data = pipeline.extract_all_data(coordinates, date_str, lookback)
             zone_info = data["zone"]
             zone_text = f"{zone_info['name']} (près de {zone_info['nearest_place']})"
-            st.write("Prédiction du stress hydrique")
+            st.write(t("an_predict"))
             prediction = predictor.predict(data["features"])
             if not demo:
                 predictor.log_prediction(prediction)
@@ -329,88 +343,87 @@ def run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo: bo
                 interpretation=predictor.interpret_indices(data["features"], zone_info["id"]),
                 model_meta=predictor.metadata,
             )
+            report["zone_id"] = zone_info["id"]
             st.session_state.result = {"data": data, "report": report}
             st.session_state.station = None
-            status.update(label="Analyse terminée", state="complete", expanded=False)
+            status.update(label=t("an_done"), state="complete", expanded=False)
         except (DataUnavailableError, ValueError) as e:
             st.session_state.error = str(e)
-            status.update(label="Analyse impossible", state="error", expanded=False)
+            status.update(label=t("an_failed"), state="error", expanded=False)
         except Exception as e:
             logger.exception("Erreur d'analyse")
             msg = str(e)
             if "earthengine" in msg.lower() or "credentials" in msg.lower() or "not found" in msg.lower():
-                msg += (" — Vérifiez l'accès Earth Engine : secret GCP_SERVICE_ACCOUNT_JSON sur Streamlit Cloud "
-                        "(voir README).")
-            st.session_state.error = f"Erreur : {msg}"
-            status.update(label="Analyse impossible", state="error", expanded=False)
+                msg += t("an_ee_hint")
+            st.session_state.error = t("an_error", msg=msg)
+            status.update(label=t("an_failed"), state="error", expanded=False)
 
 
 def render_report(result):
     report, data = result["report"], result["data"]
+    lang = get_lang()
     pred = report["prediction"]
-    style = CLASS_STYLES[pred["class_index"]]
+    idx = pred["class_index"]
+    style = CLASS_STYLES[idx]
     interp = report["interpretation"]
     w = report["weather"]
+    zone_info = data["zone"]
+    zone_txt = t("zone_near", zone=zone_name(zone_info["id"], zone_info["name"], lang), place=zone_info["nearest_place"])
+    crop_txt = crop_name(report["crop"], lang)
 
-    st.markdown("<div class='hs-section'>Rapport d'analyse</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hs-section'>{t('rp_title')}</div>", unsafe_allow_html=True)
     if report["demo"]:
-        st.markdown(
-            "<div class='hs-banner'>⚠ Données de démonstration : ce rapport montre le fonctionnement du "
-            "tableau de bord, les valeurs ne viennent pas des satellites pour cette parcelle.</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='hs-banner'>{t('rp_demo')}</div>", unsafe_allow_html=True)
 
     c_status, c_prob = st.columns([1.1, 1], gap="large")
     with c_status:
         lat, lon = report["parcel"]["centroid"]
+        conf_line = t("rp_conf_line", conf=pred["confidence_percent"], zone=zone_txt, crop=crop_txt,
+                      date=report["analysis_date"], ha=report["parcel"]["area_ha"], lat=lat, lon=lon)
         st.markdown(
             f"""<div class="hs-status" style="border-left:8px solid {style['color']}">
-<div class="lbl">Niveau de stress hydrique</div>
-<div class="val" style="color:{style['color']}">{style['label']}</div>
-<div class="sub">{style['summary']}</div>
+<div class="lbl">{t('rp_level')}</div>
+<div class="val" style="color:{style['color']}">{class_label(idx, lang)}</div>
+<div class="sub">{class_summary(idx, lang)}</div>
 <div class="sub" style="color:#94A3B8;margin-top:10px;font-size:.88rem">
-Confiance {pred['confidence_percent']:.1f} % · {report['zone']} · {report['crop']} · {report['analysis_date']}<br>
-Parcelle de {report['parcel']['area_ha']} ha · centre {lat}, {lon}</div></div>""",
+{conf_line}</div></div>""",
             unsafe_allow_html=True,
         )
     with c_prob:
-        st.markdown("<div class='hs-section'>Probabilités</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('rp_probs')}</div>", unsafe_allow_html=True)
         st.plotly_chart(plot_probabilities(pred["probabilities"]), width="stretch",
                         config={"displayModeBar": False})
 
     st.write("")
     cols = st.columns(6)
     tiles = [
-        ("NDVI · vigueur", f"{interp['NDVI']['value']:.2f}", interp["NDVI"]["status"]),
-        ("NDWI · eau foliaire", f"{interp['NDWI']['value']:.2f}", interp["NDWI"]["status"]),
-        ("MSI · stress", f"{interp['MSI']['value']:.2f}", interp["MSI"]["status"]),
-        ("Pluie 30 jours", f"{w['precipitation_30d_mm']} mm", None),
-        ("T° max 30 jours", f"{w['temperature_max_c']} °C", None),
-        ("Jours secs consécutifs", f"{w['dry_days_max']}", None),
+        (t("kpi_ndvi"), f"{interp['NDVI']['value']:.2f}", interp["NDVI"]["status"]),
+        (t("kpi_ndwi"), f"{interp['NDWI']['value']:.2f}", interp["NDWI"]["status"]),
+        (t("kpi_msi"), f"{interp['MSI']['value']:.2f}", interp["MSI"]["status"]),
+        (t("kpi_rain30"), f"{w['precipitation_30d_mm']} mm", None),
+        (t("kpi_tmax30"), f"{w['temperature_max_c']} °C", None),
+        (t("kpi_dry"), f"{w['dry_days_max']}", None),
     ]
     for col, (label, value, status) in zip(cols, tiles):
         with col:
             if status:
-                kpi(label, value, f"● {STATUS_LABELS[status]}", STATUS_COLORS[status])
+                kpi(label, value, f"● {status_label(status, lang)}", STATUS_COLORS[status])
             else:
                 kpi(label, value, "&nbsp;")
 
     meta = report["sentinel_meta"]
     if meta:
-        st.caption(
-            f"Composite Sentinel-2 de {meta['image_count']} image(s) sur {meta['window_days']} jours · "
-            f"{meta['valid_pixel_fraction']:.0%} de pixels valides (hors nuages)."
-        )
+        st.caption(t("rp_s2", n=meta["image_count"], d=meta["window_days"], v=f"{meta['valid_pixel_fraction']:.0%}"))
 
     c_weather, c_reco = st.columns([1.4, 1], gap="large")
     with c_weather:
-        st.markdown("<div class='hs-section'>Météo de la période</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('rp_weather')}</div>", unsafe_allow_html=True)
         st.plotly_chart(plot_weather(data["chirps_series"], data["era5_series"]), width="stretch",
                         config={"displayModeBar": False})
     with c_reco:
-        rec = report["recommendations"]
-        st.markdown(f"<div class='hs-section'>Recommandations · priorité {rec['priority'].upper()}</div>",
-                    unsafe_allow_html=True)
+        rec = localized_recommendations(idx, report["crop"], report.get("zone_id"),
+                                        report["recommendations"]["priority"], lang)
+        st.markdown(f"<div class='hs-section'>{t('rp_reco', p=rec['priority'])}</div>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown(f"**{rec['title']}**")
             for action in rec["actions"]:
@@ -418,78 +431,79 @@ Parcelle de {report['parcel']['area_ha']} ha · centre {lat}, {lon}</div></div>"
 
     c_idx, c_dl = st.columns([1.4, 1], gap="large")
     with c_idx:
-        st.markdown("<div class='hs-section'>Indices spectraux</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('rp_indices')}</div>", unsafe_allow_html=True)
         table = pd.DataFrame([
-            {"Indice": k, "Valeur": v["value"], "Référence": f"{v['healthy_range'][0]} – {v['healthy_range'][1]}",
-             "État": STATUS_LABELS[v["status"]], "Description": v["description"]}
+            {t("col_index"): k, t("col_value"): v["value"],
+             t("col_ref"): f"{v['healthy_range'][0]} – {v['healthy_range'][1]}",
+             t("col_state"): status_label(v["status"], lang),
+             t("col_desc"): index_description(k, v["description"], lang)}
             for k, v in interp.items()
         ])
         st.dataframe(table, hide_index=True, width="stretch")
     with c_dl:
-        st.markdown("<div class='hs-section'>Exporter</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('rp_export')}</div>", unsafe_allow_html=True)
         st.download_button(
-            "⬇️ Télécharger le rapport (HTML)", data=report_to_html(report),
+            t("rp_dl_html"), data=report_to_html(report, lang=lang, zone_label=zone_txt),
             file_name=f"rapport_hydrostress_{report['analysis_date']}.html", mime="text/html",
             type="primary", width="stretch",
         )
         st.download_button(
-            "⬇️ Données de l'analyse (JSON)",
+            t("rp_dl_json"),
             data=json.dumps({"report": report, "features": data["features"]}, ensure_ascii=False,
                             indent=2, default=str),
             file_name=f"hydrostress_{report['analysis_date']}.json", mime="application/json",
             width="stretch",
         )
-        st.caption("Le rapport HTML s'ouvre dans le navigateur et s'imprime en PDF (Ctrl+P).")
+        st.caption(t("rp_print"))
 
     render_station_validation(report, data)
 
 
 def render_station_validation(report, data):
-    st.markdown("<div class='hs-section'>Validation par station météo (NOAA)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hs-section'>{t('st_title')}</div>", unsafe_allow_html=True)
     with st.container(border=True):
-        st.caption(
-            "Compare la météo utilisée (ERA5-Land, CHIRPS) aux observations de la station synoptique "
-            "la plus proche (moins de 150 km). Les stations sont trop espacées pour remplacer ces données, "
-            "mais elles permettent de vérifier leur cohérence."
-        )
+        st.caption(t("st_intro"))
         if report["demo"]:
-            st.info("Indisponible pour les données de démonstration.")
+            st.info(t("st_demo"))
             return
-        if st.button("Comparer avec la station la plus proche", key="station_btn"):
+        if st.button(t("st_btn"), key="station_btn"):
             lat, lon = report["parcel"]["centroid"]
-            with st.spinner("Recherche de la station et téléchargement des observations…"):
+            with st.spinner(t("st_searching")):
                 try:
                     st.session_state.station = validate_analysis(lat, lon, data["chirps_series"],
                                                                  data["era5_series"])
                 except Exception as e:
                     logger.exception("Validation station")
-                    st.session_state.station = {"station": None, "message": f"Service NOAA indisponible : {e}"}
+                    st.session_state.station = {"station": None, "message": t("st_unavailable", e=e)}
         res = st.session_state.station
         if not res:
             return
         if not res.get("station"):
-            st.warning(res.get("message", "Aucune station disponible."))
+            msg = res.get("message") or ""
+            if msg.startswith("Aucune station NOAA"):
+                msg = t("st_none_near", km=150)
+            elif msg.startswith("Les stations proches"):
+                msg = t("st_no_data")
+            st.warning(msg or t("st_none"))
             return
         stn, m = res["station"], res["metrics"]
-        st.markdown(f"**{stn['name']}** · {stn['distance_km']} km de la parcelle · altitude {stn['elevation_m']:.0f} m")
+        st.markdown(t("st_header", name=stn["name"], km=stn["distance_km"], alt=f"{stn['elevation_m']:.0f}"))
         rows = []
-        labels = {"temperature_mean": "T° moyenne (°C)", "temperature_max": "T° max (°C)",
-                  "precipitation": "Pluie (mm/jour)"}
+        labels = {"temperature_mean": t("st_tmean"), "temperature_max": t("st_tmax"), "precipitation": t("st_rain")}
         for key, label in labels.items():
             if key in m:
-                rows.append({"Variable": label, "Jours comparés": m[key]["days"], "Biais (maillé − station)": m[key]["bias"],
-                             "Erreur moyenne": m[key]["mae"], "Corrélation": m[key]["corr"]})
+                rows.append({t("st_col_var"): label, t("st_col_days"): m[key]["days"], t("st_col_bias"): m[key]["bias"],
+                             t("st_col_mae"): m[key]["mae"], t("st_col_corr"): m[key]["corr"]})
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         if "precipitation" in m:
             p = m["precipitation"]
-            st.caption(f"Cumul de pluie sur les jours communs : station {p['total_station_mm']} mm, "
-                       f"CHIRPS {p['total_grid_mm']} mm.")
+            st.caption(t("st_rain_total", s=p["total_station_mm"], g=p["total_grid_mm"]))
         series, era5 = res["series"], data["era5_series"]
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=series["date"], y=series["temperature_c"], name="Station · T° moyenne",
+        fig.add_trace(go.Scatter(x=series["date"], y=series["temperature_c"], name=t("st_series_station"),
                                  line=dict(color="#E2E8F0", width=2)))
         if not era5.empty:
-            fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name="ERA5-Land · T° moyenne",
+            fig.add_trace(go.Scatter(x=era5["date"], y=era5["temperature_c"], name=t("st_series_era5"),
                                      line=dict(color="#FACC15", width=2, dash="dot")))
         fig.update_layout(template="plotly_dark", height=260, margin=dict(l=10, r=10, t=10, b=10),
                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -506,32 +520,25 @@ def render_model_section(predictor):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         origin = model_origin(meta)
-        kpi("Source des données", origin[:1].upper() + origin[1:])
+        kpi(t("md_source"), origin[:1].upper() + origin[1:])
     with c2:
-        kpi("Échantillons", meta.get("training_samples", "—"))
+        kpi(t("md_samples"), meta.get("training_samples", "—"))
     with c3:
-        kpi("Accuracy (test)", f"{metrics['accuracy']:.0%}" if metrics else "—")
+        kpi(t("md_accuracy"), f"{metrics['accuracy']:.0%}" if metrics else "—")
     with c4:
-        kpi("Entraîné le", (meta.get("created_at") or "—")[:10])
+        kpi(t("md_trained"), (meta.get("created_at") or "—")[:10])
     if meta.get("data_source") == "synthetic":
-        st.caption(
-            "Le modèle actuel est entraîné sur des données synthétiques calées sur les climats des zones agricoles du Maroc. "
-            "Il sera remplacé par un modèle entraîné sur des données réelles (build_dataset.py)."
-        )
+        st.caption(t("md_synth"))
     elif str(meta.get("data_source", "")).startswith("terrain:"):
-        st.caption(
-            f"Modèle entraîné sur des données réelles de {model_origin(meta)}"
-            + (f" ({meta['origin_details']})" if meta.get("origin_details") else "")
-            + " : registres d'irrigation et images satellite. Le stress de chaque date "
-            "vient d'un bilan hydrique FAO-56 (climat + apports réels) ; le test porte sur des campagnes jamais vues. "
-            "Pour d'autres régions et cultures, les résultats restent indicatifs : partagez vos données "
-            "(section « 🤝 Aidez-nous à améliorer le modèle ») pour l'élargir."
-        )
+        details = f" ({meta['origin_details']})" if meta.get("origin_details") else ""
+        st.caption(t("md_real", origin=model_origin(meta), details=details))
 
 
 def render_simulation(predictor):
     month = datetime.now().month - 1
-    zone_id = st.selectbox("Zone agricole", list(ZONES), format_func=lambda z: ZONES[z]["name"], key="sim_zone")
+    lang = get_lang()
+    zone_id = st.selectbox(t("sm_zone"), list(ZONES), format_func=lambda z: zone_name(z, ZONES[z]["name"], lang),
+                           key="sim_zone")
     zone = ZONES[zone_id]
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -539,13 +546,14 @@ def render_simulation(predictor):
         ndwi = st.slider("NDWI", -0.4, 0.6, 0.15, 0.01, key="sim_ndwi")
         msi = st.slider("MSI", 0.2, 2.5, 0.75, 0.01, key="sim_msi")
     with c2:
-        precip_30j = st.slider("Pluie 30 jours (mm)", 0.0, 150.0, float(zone["precip"][month]), 1.0, key=f"sim_p_{zone_id}")
-        dry_days = st.slider("Jours secs consécutifs", 0, 30, 20, 1, key="sim_dry")
-        crop = st.selectbox("Culture", zone["crops"], key=f"sim_crop_{zone_id}")
+        precip_30j = st.slider(t("sm_rain"), 0.0, 150.0, float(zone["precip"][month]), 1.0, key=f"sim_p_{zone_id}")
+        dry_days = st.slider(t("sm_dry"), 0, 30, 20, 1, key="sim_dry")
+        crop = st.selectbox(t("sm_crop"), zone["crops"], format_func=lambda c: crop_name(c, lang),
+                            key=f"sim_crop_{zone_id}")
     with c3:
-        temp_mean = st.slider("T° moyenne (°C)", -5.0, 45.0, float(zone["temp"][month]), 0.5, key=f"sim_t_{zone_id}")
-        temp_max = st.slider("T° max (°C)", 0.0, 52.0, float(zone["temp"][month] + 11), 0.5, key=f"sim_tmax_{zone_id}")
-        humidity = st.slider("Humidité moyenne (%)", 0.0, 100.0, float(zone["rh"][month]), 1.0, key=f"sim_rh_{zone_id}")
+        temp_mean = st.slider(t("sm_tmean"), -5.0, 45.0, float(zone["temp"][month]), 0.5, key=f"sim_t_{zone_id}")
+        temp_max = st.slider(t("sm_tmax"), 0.0, 52.0, float(zone["temp"][month] + 11), 0.5, key=f"sim_tmax_{zone_id}")
+        humidity = st.slider(t("sm_rh"), 0.0, 100.0, float(zone["rh"][month]), 1.0, key=f"sim_rh_{zone_id}")
 
     sin_doy, cos_doy = day_of_year_cyclic(datetime.now())
     data = {
@@ -563,13 +571,15 @@ def render_simulation(predictor):
     }
     pred = predictor.predict(data)
     style = CLASS_STYLES[pred["class_index"]]
-    rec = predictor.get_recommendations(pred, crop, zone_id)
+    base = predictor.get_recommendations(pred, crop, zone_id)
+    rec = localized_recommendations(pred["class_index"], crop, zone_id, base["priority"], lang)
     c_res, c_rec = st.columns([1, 1.4], gap="large")
     with c_res:
         st.markdown(
             f"<div class='hs-status' style='border-left:8px solid {style['color']}'>"
-            f"<div class='lbl'>Résultat simulé</div><div class='val' style='color:{style['color']}'>"
-            f"{style['label']}</div><div class='sub'>Confiance {pred['confidence_percent']:.1f} %</div></div>",
+            f"<div class='lbl'>{t('sm_result')}</div><div class='val' style='color:{style['color']}'>"
+            f"{class_label(pred['class_index'], lang)}</div>"
+            f"<div class='sub'>{t('sm_conf', c=pred['confidence_percent'])}</div></div>",
             unsafe_allow_html=True,
         )
     with c_rec:
@@ -618,7 +628,8 @@ def main():
         c_zone, c_place = st.columns(2)
         with c_zone:
             zone_choice = st.selectbox(t("region"), ["Tout le Maroc"] + list(ZONES),
-                                       format_func=lambda z: ZONES[z]["name"] if z in ZONES else t("all_morocco"))
+                                       format_func=lambda z: zone_name(z, ZONES[z]["name"], get_lang())
+                                       if z in ZONES else t("all_morocco"))
         with c_place:
             places = ["Toute la région"] + (list(ZONES[zone_choice]["places"]) if zone_choice in ZONES else [])
             place = st.selectbox(t("place"), places, disabled=zone_choice not in ZONES,
@@ -626,7 +637,8 @@ def main():
         # Cultures : celles de la zone choisie ou détectée en premier, puis les autres
         crop_zone = zone_choice if zone_choice in ZONES else st.session_state.detected_zone
         zone_crops = ZONES[crop_zone]["crops"] if crop_zone in ZONES else []
-        crop = st.selectbox(t("crop"), zone_crops + [c for c in CROPS if c not in zone_crops])
+        crop = st.selectbox(t("crop"), zone_crops + [c for c in CROPS if c not in zone_crops],
+                            format_func=lambda c: crop_name(c, get_lang()))
         c_date, c_win = st.columns(2)
         with c_date:
             analysis_date = st.date_input(
@@ -652,6 +664,7 @@ def main():
             build_map(center, zoom), height=560, use_container_width=True,
             returned_objects=["last_active_drawing"], key=f"map_{zone_choice}_{place}",
         )
+        map_legend()
 
     coordinates = None
     if map_data and map_data.get("last_active_drawing"):
@@ -672,7 +685,7 @@ def main():
                     st.rerun()  # met à jour la liste des cultures
                 far = t("parcel_far", d=dist) if dist > 150 else ""
                 ready_html = t("parcel_ready", ha=area_ha, n=len(coordinates) - 1, lat=c.y, lon=c.x,
-                               zone=ZONES[zone_id]["name"], near=near, far=far)
+                               zone=zone_name(zone_id, ZONES[zone_id]["name"], get_lang()), near=near, far=far)
                 st.markdown(f"<div class='hs-parcel'>{ready_html}</div>", unsafe_allow_html=True)
             except ValueError as e:
                 parcel_error = str(e)
@@ -701,8 +714,6 @@ def main():
 
     if st.session_state.result:
         st.divider()
-        if t("report_lang_note"):
-            st.caption(t("report_lang_note"))
         render_report(st.session_state.result)
 
     st.divider()

@@ -13,78 +13,87 @@ import streamlit as st
 from contrib import (CONSENT_TEXT, OTHER_TYPES, REGISTER_TYPES, Contribution, get_storage, secret_names, submit,
                      summarize_registers)
 from farm import CROPS, IRRIGATION, SOILS, Farm, parse_spacing
+from i18n import get_lang, pick, t
+from report_text import IRRIGATION_NAMES, SOIL_NAMES, crop_name
+
+# Messages de contrib.Contribution.errors() (en français) -> clé de traduction
+_ERROR_KEYS = {
+    "Cochez la case": "ct_err_consent", "Indiquez votre nom": "ct_err_you", "Indiquez un téléphone": "ct_err_contact",
+    "L'adresse e-mail": "ct_err_email", "Ajoutez au moins": "ct_err_file",
+}
+
+
+def _translate_error(msg: str) -> str:
+    for start, key in _ERROR_KEYS.items():
+        if msg.startswith(start):
+            return t(key)
+    if msg.endswith("fichiers au maximum."):
+        return t("ct_err_max_files", n=msg.split()[0])
+    if msg.endswith("Mo au maximum au total."):
+        return t("ct_err_max_mb", n=msg.split()[0])
+    return msg
 
 
 def render_contribution():
-    st.markdown(
-        "Le modèle apprend à partir de **vraies fermes**. Chaque ferme qui partage ses registres d'irrigation "
-        "le rend plus juste pour sa région et sa culture. Les données servent uniquement à entraîner HydroStress : "
-        "le nom et la position de votre ferme ne sont jamais publiés."
-    )
+    lang = get_lang()
+    st.markdown(t("ct_intro"))
     with st.container(border=True):
-        st.markdown(
-            "**Données les plus utiles**\n"
-            "- Registres d'irrigation **jour par jour** (m³, heures × débit ou relevés de compteur), sur plusieurs "
-            "campagnes : un fichier Excel par campagne convient.\n"
-            "- La culture, l'écartement de plantation, la surface et l'année de plantation de la parcelle.\n"
-            "- En plus si vous les avez : observations de stress (dates, symptômes), rendements par campagne, "
-            "analyses de sol, limites de la parcelle (KML / GeoJSON)."
-        )
+        st.markdown(t("ct_useful"))
 
     storage = get_storage()
     if not storage.durable and os.environ.get("CONTRIB_ALLOW_LOCAL") != "1":
         # Sans bucket, les fichiers seraient perdus au prochain redémarrage : on n'accepte pas d'envoi.
-        st.info("📬 L'envoi de données ouvre très bientôt. En attendant, contactez-nous pour partager vos registres.")
+        st.info(t("ct_soon"))
         if st.query_params.get("diag") == "1":
             st.caption("Diagnostic (noms seulement) : " + ", ".join(secret_names()))
         return
     with st.form("contribution", clear_on_submit=False):
-        st.markdown("**1. Vous**")
+        st.markdown(t("ct_you"))
         c1, c2, c3 = st.columns(3)
-        name = c1.text_input("Nom et prénom *")
-        phone = c2.text_input("Téléphone / WhatsApp")
-        email = c3.text_input("E-mail")
-        org = st.text_input("Exploitation, coopérative ou organisme (facultatif)")
+        name = c1.text_input(t("ct_name"))
+        phone = c2.text_input(t("ct_phone"))
+        email = c3.text_input(t("ct_email"))
+        org = st.text_input(t("ct_org"))
 
-        st.markdown("**2. La parcelle**")
+        st.markdown(t("ct_plot"))
         c1, c2, c3 = st.columns(3)
-        farm_name = c1.text_input("Nom de la parcelle (ex. Bloc 4) *")
-        lat = c2.number_input("Latitude *", value=None, format="%.6f", placeholder="31.887705",
-                              help="Sur la carte ci-dessus ou dans Google Maps : clic droit sur la parcelle.")
-        lon = c3.number_input("Longitude *", value=None, format="%.6f", placeholder="-4.155879")
+        farm_name = c1.text_input(t("ct_plot_name"))
+        lat = c2.number_input(t("ct_lat"), value=None, format="%.6f", placeholder="31.887705", help=t("ct_lat_help"))
+        lon = c3.number_input(t("ct_lon"), value=None, format="%.6f", placeholder="-4.155879")
         c1, c2, c3 = st.columns(3)
         crops = list(CROPS)
-        crop = c1.selectbox("Culture *", crops, index=crops.index("amandier"),
-                            format_func=lambda k: f"{CROPS[k]['name']} · {CROPS[k]['name_ar']}")
-        spacing = c2.text_input("Écartement (m) : entre rangs x sur le rang", placeholder="7x5")
-        area = c3.number_input("Surface (ha) *", min_value=0.0, value=None, placeholder="10")
+        crop = c1.selectbox(t("ct_crop"), crops, index=crops.index("amandier"),
+                            format_func=lambda k: crop_name(CROPS[k]["name"], lang))
+        spacing = c2.text_input(t("ct_spacing"), placeholder="7x5")
+        area = c3.number_input(t("ct_area"), min_value=0.0, value=None, placeholder="10")
         c1, c2, c3 = st.columns(3)
-        year = c1.number_input("Année de plantation", min_value=1950, max_value=date.today().year, value=None,
+        year = c1.number_input(t("ct_year"), min_value=1950, max_value=date.today().year, value=None,
                                placeholder="2018")
         irr_keys, soil_keys = list(IRRIGATION), list(SOILS)
-        irrigation = c2.selectbox("Irrigation", irr_keys, format_func=lambda k: IRRIGATION[k]["name"])
-        soil = c3.selectbox("Sol", soil_keys, format_func=lambda k: SOILS[k]["name"])
+        irrigation = c2.selectbox(t("ct_irrigation"), irr_keys,
+                                  format_func=lambda k: pick(IRRIGATION_NAMES.get(k, {"fr": IRRIGATION[k]["name"]})))
+        soil = c3.selectbox(t("ct_soil"), soil_keys, format_func=lambda k: pick(SOIL_NAMES.get(k, {"fr": SOILS[k]["name"]})))
 
-        st.markdown("**3. Vos fichiers**")
-        registers = st.file_uploader("Registres d'irrigation (un fichier par campagne)", type=list(REGISTER_TYPES),
+        st.markdown(t("ct_files"))
+        registers = st.file_uploader(t("ct_registers"), type=list(REGISTER_TYPES),
                                      accept_multiple_files=True)
-        others = st.file_uploader("Autres fichiers utiles (facultatif)", type=list(OTHER_TYPES),
+        others = st.file_uploader(t("ct_others"), type=list(OTHER_TYPES),
                                   accept_multiple_files=True)
-        comment = st.text_area("Remarques (période couverte, changements de culture, panne, etc.)", height=90)
+        comment = st.text_area(t("ct_comment"), height=90)
 
-        consent = st.checkbox(CONSENT_TEXT)
-        sent = st.form_submit_button("📤 Envoyer mes données", type="primary")
+        consent = st.checkbox(t("ct_consent") if lang != "fr" else CONSENT_TEXT)
+        sent = st.form_submit_button(t("ct_send"), type="primary")
 
     if not sent:
         return
 
     problems = []
     if lat is None or lon is None:
-        problems.append("Indiquez la position de la parcelle (latitude et longitude).")
+        problems.append(t("ct_err_position"))
     if not farm_name.strip():
-        problems.append("Indiquez le nom de la parcelle.")
+        problems.append(t("ct_err_name"))
     if not area:
-        problems.append("Indiquez la surface de la parcelle.")
+        problems.append(t("ct_err_area"))
     farm = None
     if not problems:
         try:
@@ -102,24 +111,23 @@ def render_contribution():
         other_files=[(f.name, f.getvalue()) for f in (others or [])],
         comment=comment,
     )
-    problems += contribution.errors()
+    problems += [_translate_error(m) for m in contribution.errors()]
     if problems:
         for p in problems:
             st.error(p)
         return
 
-    with st.spinner("Lecture des registres et envoi…"):
+    with st.spinner(t("ct_sending")):
         contribution.register_summary = summarize_registers(contribution.registers, area)
         try:
             ref = submit(contribution, storage)
         except Exception as e:  # stockage indisponible
-            st.error(f"L'envoi n'a pas abouti ({e}). Réessayez plus tard ou contactez-nous.")
+            st.error(t("ct_failed", e=e))
             return
-    st.success(f"Merci ! Vos données sont bien reçues. Référence : **{ref}**. "
-               "Gardez-la si vous voulez nous écrire à leur sujet.")
+    st.success(t("ct_thanks", ref=ref))
     summary = contribution.register_summary
     if summary:
-        st.caption(f"Registres lus du {summary['debut']} au {summary['fin']} :")
+        st.caption(t("ct_read", a=summary["debut"], b=summary["fin"]))
         st.dataframe({c: v for c, v in summary["campagnes"].items()}, width="stretch")
     elif contribution.registers:
-        st.caption("Nous n'avons pas pu lire automatiquement vos registres : nous les traiterons à la main.")
+        st.caption(t("ct_unread"))
