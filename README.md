@@ -364,7 +364,7 @@ gcloud secrets create ee-service-account --data-file=key.json
 
 # 2. Build + déploiement (région européenne la plus proche du Maroc)
 gcloud run deploy hydrostress --source . --region europe-west1 --allow-unauthenticated \
-  --memory 1Gi --set-env-vars HYDROSTRESS_STAGE=production,HYDROSTRESS_BRAND=Wahatech \
+  --memory 1Gi --set-env-vars HYDROSTRESS_BRAND=Wahatech \
   --set-secrets EE_SERVICE_ACCOUNT_JSON=ee-service-account:latest
 
 # 3. Domaine : mappage du sous-domaine, puis ajout chez le registrar de l'enregistrement DNS indiqué
@@ -379,12 +379,11 @@ automatiquement. Le compte de service de Cloud Run doit pouvoir lire le secret
 
 | Variable | Valeurs | Effet |
 |---|---|---|
-| `HYDROSTRESS_STAGE` | `production` (défaut), `beta` | `beta` réaffiche le badge BÊTA et la mention « version de démonstration » |
 | `HYDROSTRESS_BRAND` | ex. `Wahatech` | Nom de l'organisation dans le bandeau et le pied de page |
 | `EE_SERVICE_ACCOUNT_JSON` | contenu JSON brut | Compte de service Earth Engine (serveur, Docker, Cloud Run) |
 
 Sur Streamlit Cloud, les mêmes réglages peuvent être ajoutés dans *Secrets*
-(`HYDROSTRESS_STAGE = "beta"` pour une préproduction). Sans ce réglage, l'application s'affiche en version de production.
+(ex. `HYDROSTRESS_BRAND = "Wahatech"`).
 
 ## 🐛 Dépannage
 

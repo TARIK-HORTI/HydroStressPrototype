@@ -43,7 +43,7 @@ from report import CLASS_STYLES, STATUS_LABELS, build_report, report_to_html
 from stations import validate_analysis
 
 st.set_page_config(
-    page_title="HydroStress Maroc" + (" (bêta)" if os.environ.get("HYDROSTRESS_STAGE", "production").lower() == "beta" else ""),
+    page_title="HydroStress Maroc",
     page_icon="💧",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -66,9 +66,9 @@ def app_setting(name: str, default: str = "") -> str:
     return str(value).strip() if value not in (None, "") else default
 
 
-# "production" (défaut) : interface sans mention de test ; "beta" réaffiche le badge BÊTA
-STAGE = app_setting("HYDROSTRESS_STAGE", "production").lower()
-IS_BETA = STAGE == "beta"
+# Service en production : plus de badge BÊTA ni de mention « démonstration »
+# (un ancien réglage HYDROSTRESS_STAGE dans les Secrets est ignoré).
+IS_BETA = False
 BRAND = app_setting("HYDROSTRESS_BRAND", "")
 
 # ---------------------------------------------------------------------------
