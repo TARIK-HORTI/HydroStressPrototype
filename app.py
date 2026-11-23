@@ -28,6 +28,7 @@ from streamlit_folium import st_folium
 from demo import make_demo_extraction
 from farm_ui import render_farm_training
 from contrib_ui import render_contribution
+from imagery_ui import render_imagery
 from extract_data import (
     DataPipeline,
     DataUnavailableError,
@@ -180,7 +181,7 @@ def hero(predictor):
     synthetic = meta.get("data_source") == "synthetic"
     chips = [
         "🛰️ Sentinel-2 · 10 m", "🌧️ CHIRPS · pluie quotidienne", "🌡️ ERA5-Land · T° & humidité",
-        "🤖 Random Forest", f"🗺️ {len(ZONES)} zones agricoles",
+        "🤖 Random Forest", "🗺️ Cartes satellite : eau, santé, croissance", f"📍 {len(ZONES)} zones agricoles",
     ]
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
@@ -203,13 +204,14 @@ def hero(predictor):
   <p>Suivi du stress hydrique des parcelles agricoles partout au Maroc (Gharb, Saïs, Tadla, Haouz,
   Chaouia-Doukkala, Souss-Massa, Oriental, oasis du Tafilalet et du Drâa), par télédétection et
   apprentissage automatique. Choisissez une zone, dessinez votre parcelle et obtenez un diagnostic
-  avec des recommandations adaptées à la région et à la culture.</p>
+  avec des recommandations adaptées à la région et à la culture, ainsi que les cartes satellite du stress
+  hydrique, de l'état sanitaire et du développement de la végétation pour suivre la ferme à distance.</p>
   {chips_html}
 </div>
 <div class="hs-steps">
   <div class="hs-step"><b>ÉTAPE 1</b><div>Choisissez une région et dessinez la parcelle sur la carte satellite.</div></div>
   <div class="hs-step"><b>ÉTAPE 2</b><div>Indiquez la culture et la date, puis lancez l'analyse.</div></div>
-  <div class="hs-step"><b>ÉTAPE 3</b><div>Lisez le rapport ci-dessous et téléchargez-le.</div></div>
+  <div class="hs-step"><b>ÉTAPE 3</b><div>Comparez les cartes satellite entre deux dates, lisez le rapport et téléchargez-le.</div></div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -687,6 +689,10 @@ def main():
             run_analysis(predictor, coordinates, crop, analysis_date, lookback, demo=demo)
         if st.session_state.error:
             st.error(st.session_state.error)
+
+    if ready:
+        st.divider()
+        render_imagery(coordinates)
 
     if st.session_state.result:
         st.divider()
