@@ -54,6 +54,8 @@ HydroStressPrototype/
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
 ├── predict.py                 # Prédiction, interprétation, recommandations locales
+├── i18n.py / imagery_text.py  # Langues de l'interface : français, arabe (droite à gauche), anglais
+├── imagery.py / imagery_ui.py # Cartes satellite : stress hydrique, état sanitaire, développement, comparaison de dates
 ├── app.py                     # Tableau de bord Streamlit (une seule page)
 ├── report.py                  # Rapport d'analyse (export HTML)
 ├── demo.py                    # Données de démonstration (sans Earth Engine)
@@ -118,7 +120,50 @@ Tout se passe sur une seule page :
 4. Cliquer **Analyser la parcelle** : extraction, prédiction et rapport s'enchaînent
 5. Lire le rapport sous la carte et le télécharger (HTML imprimable en PDF, ou JSON)
 
-Le bouton **Voir un exemple** affiche un rapport avec des données de démonstration (sans Earth Engine), clairement signalées comme telles. Les informations sur le modèle et une simulation manuelle sont en bas de page.
+Les informations sur le modèle et une simulation manuelle sont en bas de page.
+
+### Langues
+
+Le sélecteur en haut à droite passe l'interface en **français**, **العربية** (lecture de droite à gauche) ou
+**English**. Le choix est gardé dans l'URL (`?lang=ar`, `?lang=en`) pour partager un lien dans la bonne langue.
+Sont traduits : l'en-tête, le panneau d'analyse, la section des cartes satellite, le guide des indices et
+l'interprétation automatique. Le rapport détaillé, les recommandations du modèle et les sections du bas de page
+restent en français pour l'instant ; les noms de zones et de cultures aussi.
+
+### Cartes satellite et suivi à distance
+
+Dès qu'une parcelle est dessinée, la section **Suivi satellite de la parcelle** cherche toutes les images
+Sentinel-2 où la parcelle est dégagée à plus de 80 % (12 derniers mois par défaut, depuis 2018), puis affiche
+les cartes pixel par pixel de deux dates côte à côte, la carte du changement B − A, le tableau des moyennes
+(amélioration / stable / dégradation) et la courbe d'évolution de la parcelle.
+
+| Volet | Carte | Ce qu'elle montre |
+|---|---|---|
+| 💧 Stress hydrique | **NDMI** (B8, B11) | Eau dans le feuillage |
+| | **MSI** (B11 / B8) | Stress hydrique (valeurs hautes = stress) |
+| 🩺 État sanitaire | **NDRE** (B8, B5, red-edge) | Chlorophylle : baisse tôt en cas de carence, maladie, dépérissement |
+| | **PSRI** ((B4 − B2) / B6) | Jaunissement, sénescence |
+| 🌱 Développement | **NDVI** | Vigueur et couvert |
+| | **Anomalie NDVI** | NDVI moins la médiane des mêmes semaines des 5 années précédentes |
+| | **Zones faibles** | Écart de chaque pixel à la médiane de la parcelle (%) : rangs ou arbres en retard |
+| 🛰️ Image réelle | **Couleurs naturelles** | B4, B3, B2 |
+
+La carte de la date B se télécharge en GeoTIFF (QGIS).
+
+Au-dessus des cartes, un **guide des indices** explique ce que mesure chaque indice (NDVI, NDMI, MSI, NDRE,
+PSRI), comment le lire et à quoi il sert ; l'indice de la carte choisie s'ouvre en premier. Sous les cartes,
+une **interprétation automatique** (règles, sans service payant) décrit le changement entre A et B, mesure la
+part de la parcelle en recul, propose les causes possibles classées (cycle de la culture, récolte, taille,
+stress hydrique, maladie ou ravageur, carence, dépérissement, problème localisé) et les vérifications à faire
+au champ. Elle se termine toujours par le rappel que seul le terrain permet de conclure.
+
+**Orientation (zones à visiter).** Le bouton « Détecter les zones qui ont changé » compare les deux images
+pixel par pixel (NDVI, NDMI, NDRE, PSRI), par défaut par rapport à l'évolution du reste de la parcelle pour
+retirer l'effet de la saison. Les pixels en recul sont classés (perte d'eau, chlorophylle / jaunissement, les
+deux, vigueur seule), regroupés en zones d'au moins 500 m² et dessinés sur la carte, numérotés de la plus
+prioritaire à la moins prioritaire. Chaque zone donne les indices qui ont changé, les causes possibles, les
+vérifications à faire et un itinéraire Google Maps ; l'ensemble se télécharge en GeoJSON ou en KML (Google
+Earth, OsmAnd) pour la visite au champ.
 
 ### 3. Entraîner un modèle
 
@@ -319,7 +364,7 @@ gcloud secrets create ee-service-account --data-file=key.json
 
 # 2. Build + déploiement (région européenne la plus proche du Maroc)
 gcloud run deploy hydrostress --source . --region europe-west1 --allow-unauthenticated \
-  --memory 1Gi --set-env-vars HYDROSTRESS_STAGE=beta,HYDROSTRESS_BRAND=Wahatech \
+  --memory 1Gi --set-env-vars HYDROSTRESS_STAGE=production,HYDROSTRESS_BRAND=Wahatech \
   --set-secrets EE_SERVICE_ACCOUNT_JSON=ee-service-account:latest
 
 # 3. Domaine : mappage du sous-domaine, puis ajout chez le registrar de l'enregistrement DNS indiqué
@@ -334,12 +379,12 @@ automatiquement. Le compte de service de Cloud Run doit pouvoir lire le secret
 
 | Variable | Valeurs | Effet |
 |---|---|---|
-| `HYDROSTRESS_STAGE` | `beta` (défaut), `production` | `beta` affiche le badge BÊTA et la mention « version de démonstration » |
+| `HYDROSTRESS_STAGE` | `production` (défaut), `beta` | `beta` réaffiche le badge BÊTA et la mention « version de démonstration » |
 | `HYDROSTRESS_BRAND` | ex. `Wahatech` | Nom de l'organisation dans le bandeau et le pied de page |
 | `EE_SERVICE_ACCOUNT_JSON` | contenu JSON brut | Compte de service Earth Engine (serveur, Docker, Cloud Run) |
 
 Sur Streamlit Cloud, les mêmes réglages peuvent être ajoutés dans *Secrets*
-(`HYDROSTRESS_STAGE = "beta"`). Le jour du lancement officiel, passez `HYDROSTRESS_STAGE` à `production`.
+(`HYDROSTRESS_STAGE = "beta"` pour une préproduction). Sans ce réglage, l'application s'affiche en version de production.
 
 ## 🐛 Dépannage
 
