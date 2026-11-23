@@ -22,11 +22,13 @@ from shapely.geometry import Polygon
 from streamlit_folium import st_folium
 
 from imagery import (
+    GLOSSARY,
     LAYERS,
     SERIES_INDICES,
     THEMES,
     default_period,
     diff_layer,
+    interpret_change,
     layer_maps,
     layers_for_theme,
     legend_html,
@@ -54,6 +56,80 @@ def _maps(coords_json: str, layer: str, day_a: date, day_b: date) -> dict:
     from extract_data import initialize_earth_engine
     initialize_earth_engine()
     return layer_maps(json.loads(coords_json), layer, day_a, day_b)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _change(coords_json: str, day_a: date, day_b: date) -> dict:
+    from extract_data import initialize_earth_engine
+    from imagery import ee_change_fractions
+    initialize_earth_engine()
+    return ee_change_fractions(json.loads(coords_json), day_a, day_b)
+
+
+LIKELIHOOD_STYLE = {"probable": ("#F59E0B", "Probable"), "possible": ("#94A3B8", "Possible")}
+STATUS_STYLE = {
+    "better": ("#22C55E", "✅"), "stable": ("#38BDF8", "➖"), "worse": ("#EF4444", "⚠️"), "unknown": ("#94A3B8", "❔"),
+}
+
+
+def render_glossary(selected: str | None = None):
+    """Guide des indices : ce que chacun mesure, comment le lire et à quoi il sert."""
+    st.markdown("#### 📖 Comprendre les indices satellite")
+    st.markdown(
+        "Le satellite Sentinel-2 mesure la lumière renvoyée par la parcelle dans plusieurs couleurs, dont "
+        "certaines invisibles à l'œil (proche infrarouge, red-edge, infrarouge à ondes courtes). Une feuille "
+        "saine, bien alimentée en eau et riche en chlorophylle ne renvoie pas la même lumière qu'une feuille "
+        "sèche, malade ou jaunie. Les indices combinent ces couleurs pour suivre trois choses : "
+        "**le développement de la végétation (NDVI)**, **l'eau dans les feuilles (NDMI, MSI)** et "
+        "**l'état sanitaire (NDRE, PSRI)**."
+    )
+    keys = list(GLOSSARY)
+    if selected in GLOSSARY:  # l'indice de la carte choisie en premier, ouvert
+        keys.remove(selected)
+        keys.insert(0, selected)
+    for k in keys:
+        g = GLOSSARY[k]
+        with st.expander(g["name"], expanded=(k == selected)):
+            st.markdown(
+                f"**Ce qu'il mesure.** {g['meaning']}\n\n"
+                f"**Comment le lire.** {g['reading']}\n\n"
+                f"**À quoi il sert.** {g['use']}\n\n"
+                f"<span style='color:#94A3B8;font-size:.85rem'>Calcul : {g['formula']}</span>",
+                unsafe_allow_html=True,
+            )
+
+
+def render_interpretation(result: dict):
+    color, icon = STATUS_STYLE.get(result["status"], STATUS_STYLE["unknown"])
+    st.markdown("#### 🔎 Interprétation automatique du changement")
+    st.markdown(
+        f"<div class='hs-status' style='border-left:8px solid {color};padding:14px 18px'>"
+        f"<div style='font-size:1.05rem;color:#F1F5F9;font-weight:650'>{icon} {result['headline']}</div></div>",
+        unsafe_allow_html=True,
+    )
+    c_obs, c_hyp = st.columns([1, 1.3], gap="large")
+    with c_obs:
+        st.markdown("**Ce que montrent les images**")
+        for o in result["observations"]:
+            st.markdown(f"- {o}")
+        for n in result["notes"]:
+            st.caption(f"ℹ️ {n}")
+    with c_hyp:
+        st.markdown("**Causes possibles**")
+        for h in result["hypotheses"]:
+            hc, hl = LIKELIHOOD_STYLE.get(h["likelihood"], LIKELIHOOD_STYLE["possible"])
+            st.markdown(
+                f"<div style='margin-bottom:8px'><span class='hs-chip' style='border-color:{hc};color:{hc};"
+                f"background:transparent'>{hl}</span> <b>{h['title']}</b><br>"
+                f"<span style='color:#CBD5E1;font-size:.92rem'>{h['detail']}</span></div>",
+                unsafe_allow_html=True,
+            )
+    if result["checks"]:
+        st.markdown("**À vérifier sur le terrain**")
+        for c in result["checks"]:
+            st.markdown(f"- {c}")
+    st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>Le terrain a le dernier mot.</b> {result['disclaimer']}</div>",
+                unsafe_allow_html=True)
 
 
 def _map(coordinates: List[List[float]], tile_url: str, name: str, key: str, height: int = 380):
@@ -108,7 +184,7 @@ def _summary_table(df: pd.DataFrame, day_a: date, day_b: date) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def render_imagery(coordinates: List[List[float]], demo: bool = False):
+def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo: bool = False):
     """Section complète ; n'appelle Earth Engine qu'après le clic sur « Chercher les images »."""
     st.markdown("<div class='hs-section'>Suivi satellite de la parcelle · cartes Sentinel-2</div>",
                 unsafe_allow_html=True)
@@ -117,6 +193,7 @@ def render_imagery(coordinates: List[List[float]], demo: bool = False):
         "(10 à 20 m). Choisissez deux dates pour comparer la parcelle image contre image et voir où elle évolue. "
         "Une nouvelle image Sentinel-2 environ tous les 5 jours, gratuite."
     )
+    glossary_slot = st.container()
 
     coords_json = json.dumps(coordinates)
     start_default, end_default = default_period()
@@ -148,6 +225,9 @@ def render_imagery(coordinates: List[List[float]], demo: bool = False):
                     logger.exception("Imagerie Sentinel-2")
                     st.session_state.img_error = f"Images indisponibles : {e}"
 
+    with glossary_slot:  # l'indice de la carte choisie s'ouvre en premier (choix fait plus bas)
+        render_glossary(st.session_state.get("img_selected_index"))
+
     if st.session_state.get("img_error"):
         st.error(st.session_state.img_error)
         return
@@ -169,6 +249,10 @@ def render_imagery(coordinates: List[List[float]], demo: bool = False):
     options = layers_for_theme(theme)
     layer = p2.radio("Carte", options, format_func=lambda k: LAYERS[k]["label"], key=f"img_layer_{theme}")
     st.caption(LAYERS[layer]["description"])
+    selected_index = {"NDVI_ANOM": "NDVI", "NDVI_ZONES": "NDVI"}.get(layer, layer)
+    if st.session_state.get("img_selected_index") != selected_index:
+        st.session_state.img_selected_index = selected_index
+        st.rerun()  # rouvre le guide sur l'indice de la carte choisie
 
     d1, d2 = st.columns(2)
     fmt = (lambda d: d.strftime("%d/%m/%Y"))
@@ -222,6 +306,21 @@ def render_imagery(coordinates: List[List[float]], demo: bool = False):
             "Les indices montrent un changement de vigueur, d'eau ou de chlorophylle, pas sa cause : "
             "une baisse localisée se vérifie au champ (irrigation, maladie, ravageur, carence)."
         )
+
+    if day_a != day_b:
+        row_a = df[df["date"] == pd.Timestamp(day_a)].iloc[0]
+        row_b = df[df["date"] == pd.Timestamp(day_b)].iloc[0]
+        try:
+            fractions = _change(coords_json, day_a, day_b)
+        except Exception:
+            logger.exception("Part de la parcelle en baisse")
+            fractions = None
+        render_interpretation(interpret_change(
+            {k: row_a[k] for k in SERIES_INDICES}, {k: row_b[k] for k in SERIES_INDICES},
+            day_a, day_b, crop=crop, fractions=fractions,
+        ))
+    else:
+        st.info("Choisissez deux dates différentes pour obtenir l'interprétation du changement.")
 
     st.markdown("**Évolution de la parcelle sur la période** (moyenne à chaque image)")
     chosen = st.multiselect("Indices", SERIES_INDICES, default=["NDVI", "NDMI", "NDRE"], key="img_series_idx")

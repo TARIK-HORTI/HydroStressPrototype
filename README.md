@@ -139,8 +139,14 @@ les cartes pixel par pixel de deux dates côte à côte, la carte du changement 
 | | **Zones faibles** | Écart de chaque pixel à la médiane de la parcelle (%) : rangs ou arbres en retard |
 | 🛰️ Image réelle | **Couleurs naturelles** | B4, B3, B2 |
 
-La carte de la date B se télécharge en GeoTIFF (QGIS). Les indices signalent un changement, pas sa cause :
-une baisse localisée se vérifie au champ.
+La carte de la date B se télécharge en GeoTIFF (QGIS).
+
+Au-dessus des cartes, un **guide des indices** explique ce que mesure chaque indice (NDVI, NDMI, MSI, NDRE,
+PSRI), comment le lire et à quoi il sert ; l'indice de la carte choisie s'ouvre en premier. Sous les cartes,
+une **interprétation automatique** (règles, sans service payant) décrit le changement entre A et B, mesure la
+part de la parcelle en recul, propose les causes possibles classées (cycle de la culture, récolte, taille,
+stress hydrique, maladie ou ravageur, carence, dépérissement, problème localisé) et les vérifications à faire
+au champ. Elle se termine toujours par le rappel que seul le terrain permet de conclure.
 
 ### 3. Entraîner un modèle
 

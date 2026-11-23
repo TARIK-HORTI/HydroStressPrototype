@@ -692,7 +692,7 @@ def main():
 
     if ready:
         st.divider()
-        render_imagery(coordinates)
+        render_imagery(coordinates, crop=crop)
 
     if st.session_state.result:
         st.divider()

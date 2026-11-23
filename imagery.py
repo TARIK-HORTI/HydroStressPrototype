@@ -344,3 +344,269 @@ def layer_maps(coordinates: List[List[float]], layer: str, day_a: date, day_b: d
         d = diff_layer(layer)
         out["diff"] = ee_tile_url(img_b.subtract(img_a), d["min"], d["max"], d["palette"])
     return out
+
+
+# ---------------------------------------------------------------------------
+# Guide des indices (affiché sur le site)
+# ---------------------------------------------------------------------------
+GLOSSARY: Dict[str, Dict[str, str]] = {
+    "NDVI": {
+        "name": "NDVI — Indice de végétation par différence normalisée",
+        "formula": "(PIR − Rouge) / (PIR + Rouge) · bandes B8 et B4 · 10 m",
+        "meaning": "Une feuille verte absorbe le rouge pour la photosynthèse et renvoie fortement le proche "
+                   "infrarouge. Plus il y a de feuillage vert et vigoureux, plus le NDVI est élevé.",
+        "reading": "< 0,2 : sol nu ou très peu de végétation · 0,2–0,4 : couvert faible ou jeune · "
+                   "0,4–0,6 : couvert moyen · > 0,6 : végétation dense et vigoureuse.",
+        "use": "Suivre la croissance et le développement du couvert, comparer les blocs, repérer les arbres "
+               "ou les rangs en retard. C'est l'indice de référence, mais il réagit tard : quand il baisse, "
+               "le problème est souvent déjà installé.",
+    },
+    "NDMI": {
+        "name": "NDMI — Indice d'humidité par différence normalisée",
+        "formula": "(PIR − SWIR) / (PIR + SWIR) · bandes B8 et B11 · 20 m",
+        "meaning": "L'eau contenue dans les feuilles absorbe l'infrarouge à ondes courtes (SWIR). Une feuille "
+                   "bien hydratée renvoie peu de SWIR, donc un NDMI élevé.",
+        "reading": "< 0 : feuillage sec ou sol nu · 0–0,2 : teneur en eau faible à moyenne · "
+                   "> 0,2 : feuillage bien alimenté en eau.",
+        "use": "Détecter le stress hydrique tôt, avant que les feuilles ne jaunissent ou ne tombent, et "
+               "vérifier que l'irrigation arrive partout dans la parcelle (secteurs, bouts de lignes).",
+    },
+    "MSI": {
+        "name": "MSI — Indice de stress hydrique",
+        "formula": "SWIR / PIR · bandes B11 et B8 · 20 m",
+        "meaning": "Même information que le NDMI, lue à l'envers : il augmente quand la végétation perd de l'eau.",
+        "reading": "< 0,8 : pas de stress · 0,8–1,2 : stress modéré · > 1,2 : stress fort ou sol nu.",
+        "use": "Confirmer un stress hydrique signalé par le NDMI.",
+    },
+    "NDRE": {
+        "name": "NDRE — Indice red-edge par différence normalisée",
+        "formula": "(PIR − Red-edge) / (PIR + Red-edge) · bandes B8 et B5 · 20 m",
+        "meaning": "Le « red-edge » est la zone où la réflectance de la feuille passe du rouge au proche "
+                   "infrarouge. Sa position dépend directement de la chlorophylle (et donc de l'azote).",
+        "reading": "< 0,15 : peu de chlorophylle · 0,15–0,3 : moyen · > 0,3 : feuillage riche en chlorophylle.",
+        "use": "Indicateur de l'état sanitaire et nutritionnel : il baisse avant le NDVI en cas de carence "
+               "(azote, fer), de maladie, d'attaque de ravageurs ou de dépérissement, et il sature moins "
+               "que le NDVI sur les vergers denses.",
+    },
+    "PSRI": {
+        "name": "PSRI — Indice de réflectance de la sénescence des plantes",
+        "formula": "(Rouge − Bleu) / Red-edge 2 · bandes B4, B2 et B6 · 20 m",
+        "meaning": "Mesure le rapport entre pigments jaunes (caroténoïdes) et chlorophylle. Quand la "
+                   "chlorophylle disparaît, les feuilles jaunissent et le PSRI augmente.",
+        "reading": "< 0 : feuillage vert et actif · 0–0,1 : début de jaunissement · "
+                   "> 0,1 : jaunissement net, sénescence ou dessèchement.",
+        "use": "Repérer le jaunissement : maladie, carence, attaque de ravageurs, stress prolongé, mais aussi "
+               "maturité des cultures annuelles et chute des feuilles en automne.",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Interprétation automatique du changement entre deux dates
+# ---------------------------------------------------------------------------
+DECIDUOUS_KEYWORDS = ("amandier", "vigne", "pommier", "prunier", "arboriculture", "rosier", "pêcher",
+                      "abricotier", "cerisier", "noyer", "grenadier", "figuier")
+ANNUAL_KEYWORDS = ("céréale", "blé", "orge", "betterave", "maraîchage", "légumineuse", "riz", "luzerne",
+                   "canne", "maïs", "fourrage")
+
+# Part de la parcelle en baisse : au-dessous, rien ; entre les deux, par taches ; au-dessus, généralisé
+PATCHY_MIN, GENERAL_MIN = 0.10, 0.60
+
+DISCLAIMER = (
+    "Cette lecture est automatique et indicative. Le satellite mesure un changement de couleur, d'eau ou de "
+    "chlorophylle du feuillage ; il ne voit ni l'insecte, ni le champignon, ni le goutte-à-goutte bouché. "
+    "Plusieurs causes donnent la même image : seule une visite au champ (et si besoin l'avis d'un conseiller "
+    "agricole ou d'un laboratoire) permet de conclure."
+)
+
+
+def crop_kind(crop: Optional[str]) -> str:
+    """deciduous (feuilles caduques), annual (culture annuelle / fauchée) ou evergreen."""
+    c = (crop or "").lower()
+    if any(k in c for k in DECIDUOUS_KEYWORDS):
+        return "deciduous"
+    if any(k in c for k in ANNUAL_KEYWORDS):
+        return "annual"
+    return "evergreen"
+
+
+def _extent(fraction: Optional[float]) -> str:
+    if fraction is None:
+        return "unknown"
+    if fraction >= GENERAL_MIN:
+        return "general"
+    if fraction >= PATCHY_MIN:
+        return "patchy"
+    return "none"
+
+
+def _pct(x: Optional[float]) -> str:
+    return "—" if x is None else f"{x:.0%}"
+
+
+def interpret_change(
+    a: Dict[str, float], b: Dict[str, float], day_a: date, day_b: date,
+    crop: Optional[str] = None, fractions: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """
+    Lecture du changement entre deux dates : constat, causes possibles classées, vérifications au
+    champ et avertissement. `a` et `b` : moyennes de la parcelle ; `fractions` : part de la parcelle
+    où l'indice s'est dégradé (ndvi_down, ndmi_down, ndre_down, psri_up).
+    """
+    fractions = fractions or {}
+    t = {k: trend(k, a.get(k), b.get(k)) for k in SERIES_INDICES}
+    worse = {k for k, v in t.items() if v["status"] == "worse"}
+    better = {k for k, v in t.items() if v["status"] == "better"}
+    water = bool({"NDMI", "MSI"} & worse)
+    chloro = "NDRE" in worse
+    yellow = "PSRI" in worse
+    vigor = "NDVI" in worse
+    extent = _extent(fractions.get("ndvi_down"))
+    extents = {k: _extent(fractions.get(k)) for k in ("ndvi_down", "ndmi_down", "ndre_down", "psri_up")}
+    patchy_only = not worse and any(e in ("patchy", "general") for e in extents.values())
+    kind = crop_kind(crop)
+    gap = (day_b - day_a).days
+    autumn_winter = day_b.month in (10, 11, 12, 1, 2)
+
+    observations = []
+    for k in SERIES_INDICES:
+        v = t[k]
+        if v["delta"] is not None:
+            observations.append(f"{k} : {a[k]:.2f} → {b[k]:.2f} ({v['delta']:+.2f}, {v['label'].lower()})")
+    if fractions:
+        observations.append(
+            f"Part de la parcelle en baisse : NDVI {_pct(fractions.get('ndvi_down'))}, "
+            f"NDMI {_pct(fractions.get('ndmi_down'))}, NDRE {_pct(fractions.get('ndre_down'))} ; "
+            f"jaunissement (PSRI en hausse) sur {_pct(fractions.get('psri_up'))}."
+        )
+
+    hypotheses: List[Dict[str, str]] = []
+    checks: List[str] = []
+
+    def add(title, likelihood, detail, *todo):
+        hypotheses.append({"title": title, "likelihood": likelihood, "detail": detail})
+        for c in todo:
+            if c not in checks:
+                checks.append(c)
+
+    if gap < 0:
+        status, headline = "unknown", "La date A est postérieure à la date B : inversez les dates."
+    elif not worse and not patchy_only:
+        if better:
+            status = "better"
+            headline = "La parcelle s'est améliorée entre les deux dates."
+            add("Croissance ou reprise de la végétation", "probable",
+                "Hausse de vigueur, d'eau ou de chlorophylle : développement normal de la culture, feuillaison, "
+                "reprise après une irrigation, une pluie ou une fertilisation.")
+            if "NDVI" in better and kind != "annual":
+                add("Développement d'adventices (mauvaises herbes)", "possible",
+                    "Entre les rangs, l'herbe fait aussi monter le NDVI sans que les arbres aillent mieux.",
+                    "Regarder si l'inter-rang est enherbé.")
+        else:
+            status = "stable"
+            headline = "Pas de changement notable de la parcelle entre les deux dates."
+            add("Situation stable", "probable", "Les indices restent dans la marge normale de variation.")
+            checks.append("Continuer la surveillance : comparer de nouveau dans 2 à 3 semaines.")
+    else:
+        status = "worse"
+        where = {"general": "sur la plus grande partie de la parcelle", "patchy": "par taches",
+                 "none": "", "unknown": ""}[extent]
+        signs = []
+        if vigor:
+            signs.append("baisse de vigueur")
+        if water:
+            signs.append("perte d'eau du feuillage")
+        if chloro:
+            signs.append("baisse de chlorophylle")
+        if yellow:
+            signs.append("jaunissement")
+        if patchy_only:
+            headline = ("La moyenne de la parcelle tient, mais certaines zones reculent : "
+                        "repérez-les sur la carte du changement B − A.")
+        else:
+            headline = f"La parcelle a reculé {where} : {', '.join(signs)}.".replace("  ", " ")
+
+        # Causes naturelles ou culturales d'abord : elles ne demandent pas d'intervention
+        if kind == "deciduous" and autumn_winter and (vigor or yellow):
+            add("Chute naturelle des feuilles (repos hivernal)", "probable",
+                f"La culture ({crop}) perd ses feuilles en automne-hiver : NDVI et NDRE baissent et le PSRI "
+                "monte chaque année à cette période, sans problème.",
+                "Comparer avec la carte « Anomalie NDVI » : si la baisse est la même que les autres années, "
+                "c'est le cycle normal.")
+        if kind == "annual" and (vigor or yellow):
+            add("Maturité, récolte ou fauche", "probable" if extent == "general" else "possible",
+                "Une culture qui mûrit, est récoltée ou fauchée (luzerne) fait chuter les indices sur toute la "
+                "parcelle.", "Vérifier le calendrier de récolte ou de coupe entre les deux dates.")
+        if vigor and not (chloro or yellow or water) and kind != "annual":
+            add("Taille, désherbage ou travail du sol", "possible",
+                "Une taille sévère ou la suppression de l'herbe entre les rangs fait baisser le NDVI sans "
+                "que les arbres souffrent.", "Vérifier les travaux réalisés entre les deux dates.")
+
+        if water:
+            add("Stress hydrique", "probable" if not (chloro or yellow) or "NDMI" in worse else "possible",
+                "Le feuillage contient moins d'eau. Causes fréquentes : apports d'irrigation insuffisants pour "
+                "la demande (chaleur, chergui, vent), panne de pompe ou coupure d'eau, goutteurs bouchés, "
+                "fuites, pression trop faible en bout de ligne, salinité de l'eau ou du sol.",
+                "Contrôler la pompe, la pression et le débit des goutteurs, surtout en bout de ligne.",
+                "Sonder l'humidité du sol à 30–60 cm (tarière) dans les zones en recul et dans une zone saine.",
+                "Comparer avec le registre d'irrigation et la météo (pic de chaleur, vent).")
+        if (chloro or yellow) and not water:
+            add("Problème sanitaire : maladie ou ravageur", "possible",
+                "Chlorophylle en baisse ou jaunissement sans perte d'eau marquée : peut venir d'une maladie "
+                "(champignon, bactérie, virus), d'une attaque de ravageurs (acariens, pucerons, cochenilles, "
+                "chenilles, scolytes) ou de nématodes au niveau des racines.",
+                "Observer les feuilles (dessus et dessous), les rameaux et le tronc dans les zones en recul : "
+                "taches, déformations, insectes, toiles, gomme, galeries.",
+                "Prendre des photos et des échantillons pour un conseiller agricole ou un laboratoire.")
+            add("Carence nutritionnelle", "possible",
+                "Une carence en azote ou une chlorose ferrique (fréquente sur sols calcaires) fait baisser le "
+                "NDRE et jaunir les feuilles.",
+                "Vérifier le programme de fertilisation ; analyse foliaire ou de sol si le doute persiste.")
+        if (chloro or yellow) and water:
+            add("Stress prolongé ou dépérissement", "possible",
+                "Perte d'eau et de chlorophylle ensemble : stress hydrique installé depuis un moment, asphyxie "
+                "ou pourriture des racines, salinité, ou attaque qui affaiblit les arbres (maladie du bois, "
+                "scolytes).", "Examiner les racines et le collet de quelques arbres en recul.")
+        if extent == "patchy" or patchy_only:
+            add("Problème localisé", "possible",
+                "Une baisse par taches oriente vers une cause localisée : secteur ou ligne d'irrigation, "
+                "goutteurs bouchés, zone de sol différente (sable, calcaire, sel), foyer de maladie ou de "
+                "ravageurs qui démarre, arbres morts ou arrachés.",
+                "Aller d'abord dans les zones rouges de la carte du changement B − A, puis comparer avec une "
+                "zone restée verte.")
+        if not hypotheses:
+            add("Recul modéré de la végétation", "possible",
+                "Le recul est réel mais ne correspond pas à un profil net : plusieurs causes peuvent se mêler.",
+                "Visiter la parcelle en commençant par les zones rouges de la carte du changement.")
+
+    notes = []
+    if 0 <= gap < 10:
+        notes.append("Les deux dates sont proches (moins de 10 jours) : les petits écarts peuvent venir de "
+                     "l'atmosphère ou de l'angle de prise de vue.")
+    if gap > 120:
+        notes.append("Plus de 4 mois séparent les deux dates : une partie du changement est saisonnière. "
+                     "La carte « Anomalie NDVI » aide à séparer le saisonnier de l'anormal.")
+    if kind == "evergreen" and autumn_winter and (vigor or yellow):
+        notes.append(f"La culture ({crop or 'non précisée'}) garde ses feuilles : une baisse en automne-hiver "
+                     "n'est pas due à la chute des feuilles.")
+
+    return {"status": status, "headline": headline, "observations": observations,
+            "hypotheses": hypotheses, "checks": checks, "notes": notes, "disclaimer": DISCLAIMER}
+
+
+def ee_change_fractions(coordinates: List[List[float]], day_a: date, day_b: date) -> Dict[str, float]:
+    """Part de la parcelle où chaque indice s'est dégradé entre A et B (un seul appel Earth Engine)."""
+    _require_ee()
+    geometry = ee.Geometry.Polygon(coordinates)
+    ia = ee_indices(ee_scene(geometry, day_a))
+    ib = ee_indices(ee_scene(geometry, day_b))
+    d = ib.subtract(ia)
+    flags = ee.Image.cat([
+        d.select("NDVI").lt(-TREND_THRESHOLDS["NDVI"]).rename("ndvi_down"),
+        d.select("NDMI").lt(-TREND_THRESHOLDS["NDMI"]).rename("ndmi_down"),
+        d.select("NDRE").lt(-TREND_THRESHOLDS["NDRE"]).rename("ndre_down"),
+        d.select("PSRI").gt(TREND_THRESHOLDS["PSRI"]).rename("psri_up"),
+    ])
+    info = flags.reduceRegion(reducer=ee.Reducer.mean(), geometry=geometry, scale=10,
+                              maxPixels=1e9, bestEffort=True).getInfo()
+    return {k: float(v) for k, v in info.items() if v is not None}

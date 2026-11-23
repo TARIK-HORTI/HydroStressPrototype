@@ -72,3 +72,68 @@ def test_anomaly_years_and_period():
 def test_legend_html_contains_bounds():
     html = legend_html(-0.2, 0.2, ["#000000", "#ffffff"], "bas", "haut", "Titre")
     assert "-0.2" in html and "0.2" in html and "linear-gradient" in html and "Titre" in html
+
+
+from imagery import GLOSSARY, crop_kind, interpret_change
+
+BASE = {"NDVI": 0.55, "NDMI": 0.25, "NDRE": 0.32, "PSRI": 0.02, "MSI": 0.75}
+
+
+def changed(**kw):
+    return {**BASE, **kw}
+
+
+def titles(result):
+    return [h["title"] for h in result["hypotheses"]]
+
+
+def test_glossary_covers_the_series_indices():
+    for k in SERIES_INDICES:
+        g = GLOSSARY[k]
+        assert all(g[f] for f in ("name", "formula", "meaning", "reading", "use"))
+
+
+def test_crop_kind():
+    assert crop_kind("Vigne") == "deciduous"
+    assert crop_kind("Amandier") == "deciduous"
+    assert crop_kind("Luzerne") == "annual"
+    assert crop_kind("Olivier") == "evergreen"
+    assert crop_kind(None) == "evergreen"
+
+
+def test_stable_parcel():
+    r = interpret_change(BASE, changed(NDVI=0.56), date(2026, 5, 1), date(2026, 5, 20), "Olivier")
+    assert r["status"] == "stable" and r["disclaimer"]
+
+
+def test_water_loss_points_to_water_stress():
+    r = interpret_change(BASE, changed(NDMI=0.12, MSI=0.95, NDVI=0.50), date(2026, 6, 1), date(2026, 7, 1),
+                         "Olivier", {"ndvi_down": 0.7, "ndmi_down": 0.8, "ndre_down": 0.1, "psri_up": 0.0})
+    assert r["status"] == "worse"
+    assert r["hypotheses"][0]["title"] == "Stress hydrique"
+    assert r["hypotheses"][0]["likelihood"] == "probable"
+    assert any("goutteurs" in c for c in r["checks"])
+
+
+def test_chlorophyll_loss_without_water_loss_points_to_health():
+    r = interpret_change(BASE, changed(NDRE=0.22, PSRI=0.09), date(2026, 5, 1), date(2026, 6, 1), "Agrumes",
+                         {"ndvi_down": 0.3, "ndmi_down": 0.0, "ndre_down": 0.4, "psri_up": 0.3})
+    t = titles(r)
+    assert "Problème sanitaire : maladie ou ravageur" in t and "Carence nutritionnelle" in t
+    assert "Problème localisé" in t and "Stress hydrique" not in t
+
+
+def test_autumn_drop_of_deciduous_tree_is_seasonal_first():
+    r = interpret_change(BASE, changed(NDVI=0.35, NDRE=0.20, PSRI=0.12), date(2026, 9, 1), date(2026, 11, 15),
+                         "Amandier")
+    assert r["hypotheses"][0]["title"].startswith("Chute naturelle des feuilles")
+
+
+def test_patchy_decline_with_stable_mean():
+    r = interpret_change(BASE, BASE, date(2026, 5, 1), date(2026, 5, 25), "Olivier",
+                         {"ndvi_down": 0.15, "ndmi_down": 0.2, "ndre_down": 0.0, "psri_up": 0.0})
+    assert r["status"] == "worse" and "Problème localisé" in titles(r)
+
+
+def test_dates_in_wrong_order():
+    assert interpret_change(BASE, BASE, date(2026, 6, 1), date(2026, 5, 1))["status"] == "unknown"
