@@ -21,25 +21,29 @@ import streamlit as st
 from shapely.geometry import Polygon
 from streamlit_folium import st_folium
 
+from i18n import get_lang, t
 from imagery import (
-    GLOSSARY,
     LAYERS,
     SERIES_INDICES,
     THEMES,
     default_period,
+    diff_labels,
     diff_layer,
+    glossary,
     interpret_change,
     layer_maps,
+    layer_text,
     layers_for_theme,
     legend_html,
+    theme_label,
     to_date,
     trend,
+    trend_label,
 )
 
 logger = logging.getLogger(__name__)
 
 SERIES_COLORS = {"NDVI": "#4ADE80", "NDMI": "#38BDF8", "NDRE": "#FACC15", "PSRI": "#F97316", "MSI": "#F87171"}
-LABEL_STATUS = {"Amélioration": "better", "Dégradation": "worse", "Stable": "stable"}
 TREND_COLORS = {"better": "#22C55E", "worse": "#EF4444", "stable": "#94A3B8", "unknown": "#94A3B8"}
 
 
@@ -66,7 +70,7 @@ def _change(coords_json: str, day_a: date, day_b: date) -> dict:
     return ee_change_fractions(json.loads(coords_json), day_a, day_b)
 
 
-LIKELIHOOD_STYLE = {"probable": ("#F59E0B", "Probable"), "possible": ("#94A3B8", "Possible")}
+LIKELIHOOD_COLORS = {"probable": "#F59E0B", "possible": "#94A3B8"}
 STATUS_STYLE = {
     "better": ("#22C55E", "✅"), "stable": ("#38BDF8", "➖"), "worse": ("#EF4444", "⚠️"), "unknown": ("#94A3B8", "❔"),
 }
@@ -74,34 +78,29 @@ STATUS_STYLE = {
 
 def render_glossary(selected: str | None = None):
     """Guide des indices : ce que chacun mesure, comment le lire et à quoi il sert."""
-    st.markdown("#### 📖 Comprendre les indices satellite")
-    st.markdown(
-        "Le satellite Sentinel-2 mesure la lumière renvoyée par la parcelle dans plusieurs couleurs, dont "
-        "certaines invisibles à l'œil (proche infrarouge, red-edge, infrarouge à ondes courtes). Une feuille "
-        "saine, bien alimentée en eau et riche en chlorophylle ne renvoie pas la même lumière qu'une feuille "
-        "sèche, malade ou jaunie. Les indices combinent ces couleurs pour suivre trois choses : "
-        "**le développement de la végétation (NDVI)**, **l'eau dans les feuilles (NDMI, MSI)** et "
-        "**l'état sanitaire (NDRE, PSRI)**."
-    )
-    keys = list(GLOSSARY)
-    if selected in GLOSSARY:  # l'indice de la carte choisie en premier, ouvert
+    lang = get_lang()
+    gl = glossary(lang)
+    st.markdown(t("gl_title"))
+    st.markdown(t("gl_intro"))
+    keys = list(gl)
+    if selected in gl:  # l'indice de la carte choisie en premier, ouvert
         keys.remove(selected)
         keys.insert(0, selected)
     for k in keys:
-        g = GLOSSARY[k]
+        g = gl[k]
         with st.expander(g["name"], expanded=(k == selected)):
             st.markdown(
-                f"**Ce qu'il mesure.** {g['meaning']}\n\n"
-                f"**Comment le lire.** {g['reading']}\n\n"
-                f"**À quoi il sert.** {g['use']}\n\n"
-                f"<span style='color:#94A3B8;font-size:.85rem'>Calcul : {g['formula']}</span>",
+                f"**{t('gl_meaning')}** {g['meaning']}\n\n"
+                f"**{t('gl_reading')}** {g['reading']}\n\n"
+                f"**{t('gl_use')}** {g['use']}\n\n"
+                f"<span style='color:#94A3B8;font-size:.85rem'>{t('gl_formula')} : {g['formula']}</span>",
                 unsafe_allow_html=True,
             )
 
 
 def render_interpretation(result: dict):
     color, icon = STATUS_STYLE.get(result["status"], STATUS_STYLE["unknown"])
-    st.markdown("#### 🔎 Interprétation automatique du changement")
+    st.markdown(t("in_title"))
     st.markdown(
         f"<div class='hs-status' style='border-left:8px solid {color};padding:14px 18px'>"
         f"<div style='font-size:1.05rem;color:#F1F5F9;font-weight:650'>{icon} {result['headline']}</div></div>",
@@ -109,15 +108,16 @@ def render_interpretation(result: dict):
     )
     c_obs, c_hyp = st.columns([1, 1.3], gap="large")
     with c_obs:
-        st.markdown("**Ce que montrent les images**")
+        st.markdown(t("in_obs"))
         for o in result["observations"]:
             st.markdown(f"- {o}")
         for n in result["notes"]:
             st.caption(f"ℹ️ {n}")
     with c_hyp:
-        st.markdown("**Causes possibles**")
+        st.markdown(t("in_causes"))
         for h in result["hypotheses"]:
-            hc, hl = LIKELIHOOD_STYLE.get(h["likelihood"], LIKELIHOOD_STYLE["possible"])
+            hc = LIKELIHOOD_COLORS.get(h["likelihood"], LIKELIHOOD_COLORS["possible"])
+            hl = t(f"lk_{h['likelihood']}")
             st.markdown(
                 f"<div style='margin-bottom:8px'><span class='hs-chip' style='border-color:{hc};color:{hc};"
                 f"background:transparent'>{hl}</span> <b>{h['title']}</b><br>"
@@ -125,10 +125,10 @@ def render_interpretation(result: dict):
                 unsafe_allow_html=True,
             )
     if result["checks"]:
-        st.markdown("**À vérifier sur le terrain**")
+        st.markdown(t("in_checks"))
         for c in result["checks"]:
             st.markdown(f"- {c}")
-    st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>Le terrain a le dernier mot.</b> {result['disclaimer']}</div>",
+    st.markdown(f"<div class='hs-banner'>🧑‍🌾 <b>{t('in_field_last')}</b> {result['disclaimer']}</div>",
                 unsafe_allow_html=True)
 
 
@@ -168,42 +168,39 @@ def _plot_series(df: pd.DataFrame, indices: List[str], day_a: date, day_b: date)
     return fig
 
 
-def _summary_table(df: pd.DataFrame, day_a: date, day_b: date) -> pd.DataFrame:
+def _summary_table(df: pd.DataFrame, day_a: date, day_b: date, lang: str) -> pd.DataFrame:
     row_a = df[df["date"] == pd.Timestamp(day_a)].iloc[0]
     row_b = df[df["date"] == pd.Timestamp(day_b)].iloc[0]
     rows = []
     for idx in SERIES_INDICES:
-        t = trend(idx, row_a[idx], row_b[idx])
+        tr = trend(idx, row_a[idx], row_b[idx])
         rows.append({
-            "Indice": LAYERS[idx]["label"],
+            t("img_col_index"): layer_text(idx, "label", lang),
             f"A · {day_a:%d/%m/%Y}": None if pd.isna(row_a[idx]) else round(float(row_a[idx]), 3),
             f"B · {day_b:%d/%m/%Y}": None if pd.isna(row_b[idx]) else round(float(row_b[idx]), 3),
-            "Écart B − A": None if t["delta"] is None else round(t["delta"], 3),
-            "Évolution": t["label"],
+            t("img_col_delta"): None if tr["delta"] is None else round(tr["delta"], 3),
+            t("img_col_trend"): trend_label(tr["status"], lang),
+            "_status": tr["status"],
         })
     return pd.DataFrame(rows)
 
 
 def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo: bool = False):
     """Section complète ; n'appelle Earth Engine qu'après le clic sur « Chercher les images »."""
-    st.markdown("<div class='hs-section'>Suivi satellite de la parcelle · cartes Sentinel-2</div>",
-                unsafe_allow_html=True)
-    st.caption(
-        "Cartes du stress hydrique, de l'état sanitaire et du développement de la végétation, pixel par pixel "
-        "(10 à 20 m). Choisissez deux dates pour comparer la parcelle image contre image et voir où elle évolue. "
-        "Une nouvelle image Sentinel-2 environ tous les 5 jours, gratuite."
-    )
+    lang = get_lang()
+    st.markdown(f"<div class='hs-section'>{t('img_title')}</div>", unsafe_allow_html=True)
+    st.caption(t("img_intro"))
     glossary_slot = st.container()
 
     coords_json = json.dumps(coordinates)
     start_default, end_default = default_period()
     c1, c2, c3 = st.columns([1, 1, 1.2])
-    start = c1.date_input("Images depuis", value=start_default, min_value=date(2018, 1, 1),
+    start = c1.date_input(t("img_since"), value=start_default, min_value=date(2018, 1, 1),
                           max_value=end_default, key="img_start")
-    end = c2.date_input("Jusqu'au", value=end_default, min_value=date(2018, 1, 2),
+    end = c2.date_input(t("img_until"), value=end_default, min_value=date(2018, 1, 2),
                         max_value=end_default, key="img_end")
     c3.write("")
-    search = c3.button("🛰️ Chercher les images sans nuages", width="stretch", key="img_search")
+    search = c3.button(t("img_search"), width="stretch", key="img_search")
 
     state_key = json.dumps([coords_json, str(start), str(end)])
     if st.session_state.get("img_key") != state_key:
@@ -213,17 +210,17 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
 
     if search:
         if demo:
-            st.session_state.img_error = "Les cartes satellite demandent l'accès Earth Engine (pas de démonstration)."
+            st.session_state.img_error = t("img_demo")
         elif (end - start).days < 10:
-            st.session_state.img_error = "Choisissez une période d'au moins 10 jours."
+            st.session_state.img_error = t("img_period_short")
         else:
-            with st.spinner("Recherche des images Sentinel-2 et calcul des indices sur la parcelle…"):
+            with st.spinner(t("img_searching")):
                 try:
                     st.session_state.img_series = _series(coords_json, start, end)
                     st.session_state.img_error = None
                 except Exception as e:  # Earth Engine : authentification, quota, réseau
                     logger.exception("Imagerie Sentinel-2")
-                    st.session_state.img_error = f"Images indisponibles : {e}"
+                    st.session_state.img_error = t("img_unavailable", e=e)
 
     with glossary_slot:  # l'indice de la carte choisie s'ouvre en premier (choix fait plus bas)
         render_glossary(st.session_state.get("img_selected_index"))
@@ -233,22 +230,22 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
         return
     df = st.session_state.get("img_series")
     if df is None:
-        st.info("Cliquez sur « Chercher les images sans nuages » pour charger les cartes de la parcelle.")
+        st.info(t("img_click"))
         return
     if len(df) < 1:
-        st.warning("Aucune image où la parcelle est dégagée à plus de 80 % sur cette période : élargissez-la.")
+        st.warning(t("img_none"))
         return
 
     dates = [to_date(d) for d in df["date"]]
-    st.success(f"{len(dates)} image(s) sans nuages sur la parcelle entre le {dates[0]:%d/%m/%Y} "
-               f"et le {dates[-1]:%d/%m/%Y}.")
+    st.success(t("img_found", n=len(dates), a=f"{dates[0]:%d/%m/%Y}", b=f"{dates[-1]:%d/%m/%Y}"))
 
     # --- Choix du volet, de la couche et des deux dates -------------------------------------------
     p1, p2 = st.columns([1, 1.3])
-    theme = p1.radio("Volet", list(THEMES), format_func=THEMES.get, key="img_theme")
+    theme = p1.radio(t("img_theme"), list(THEMES), format_func=lambda k: theme_label(k, lang), key="img_theme")
     options = layers_for_theme(theme)
-    layer = p2.radio("Carte", options, format_func=lambda k: LAYERS[k]["label"], key=f"img_layer_{theme}")
-    st.caption(LAYERS[layer]["description"])
+    layer = p2.radio(t("img_layer"), options, format_func=lambda k: layer_text(k, "label", lang),
+                     key=f"img_layer_{theme}")
+    st.caption(layer_text(layer, "description", lang))
     selected_index = {"NDVI_ANOM": "NDVI", "NDVI_ZONES": "NDVI"}.get(layer, layer)
     if st.session_state.get("img_selected_index") != selected_index:
         st.session_state.img_selected_index = selected_index
@@ -256,24 +253,25 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
 
     d1, d2 = st.columns(2)
     fmt = (lambda d: d.strftime("%d/%m/%Y"))
-    day_a = d1.selectbox("Date A (avant)", dates, index=0, format_func=fmt, key="img_day_a")
-    day_b = d2.selectbox("Date B (après)", dates, index=len(dates) - 1, format_func=fmt, key="img_day_b")
+    day_a = d1.selectbox(t("img_date_a"), dates, index=0, format_func=fmt, key="img_day_a")
+    day_b = d2.selectbox(t("img_date_b"), dates, index=len(dates) - 1, format_func=fmt, key="img_day_b")
 
     try:
-        with st.spinner("Préparation des cartes…"):
+        with st.spinner(t("img_preparing")):
             maps = _maps(coords_json, layer, day_a, day_b)
     except ValueError as e:
-        st.warning(str(e))
+        st.warning(t("img_no_history") if layer == "NDVI_ANOM" else str(e))
         return
     except Exception as e:
         logger.exception("Cartes Sentinel-2")
-        st.error(f"Cartes indisponibles : {e}")
+        st.error(t("img_maps_error", e=e))
         return
 
     spec = LAYERS[layer]
     if spec["palette"]:
-        st.markdown(legend_html(spec["min"], spec["max"], spec["palette"], spec["low"], spec["high"],
-                                spec["label"]), unsafe_allow_html=True)
+        st.markdown(legend_html(spec["min"], spec["max"], spec["palette"], layer_text(layer, "low", lang),
+                                layer_text(layer, "high", lang), layer_text(layer, "label", lang)),
+                    unsafe_allow_html=True)
     m1, m2 = st.columns(2)
     with m1:
         st.markdown(f"**A · {fmt(day_a)}**")
@@ -286,26 +284,24 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
     with c_diff:
         if maps["diff"]:
             d = diff_layer(layer)
-            st.markdown("**Changement B − A** · où la parcelle a évolué")
-            st.markdown(legend_html(d["min"], d["max"], d["palette"], d["low"], d["high"]),
+            low, high = diff_labels(layer, lang)
+            st.markdown(t("img_change"))
+            st.markdown(legend_html(d["min"], d["max"], d["palette"], low, high),
                         unsafe_allow_html=True)
             _map(coordinates, maps["diff"], f"{layer} B-A", key=f"img_map_d_{layer}_{day_a}_{day_b}", height=340)
         else:
-            st.caption("Pas de carte de différence pour cette couche.")
+            st.caption(t("img_no_diff"))
     with c_info:
         if day_a != day_b:
-            st.markdown("**Moyennes de la parcelle**")
-            table = _summary_table(df, day_a, day_b)
+            st.markdown(t("img_means"))
+            table = _summary_table(df, day_a, day_b, lang)
+            colors = [f"color:{TREND_COLORS[s]}" for s in table.pop("_status")]
             st.dataframe(
-                table.style.map(lambda v: f"color:{TREND_COLORS[LABEL_STATUS.get(v, 'unknown')]}",
-                                subset=["Évolution"]),
+                table.style.apply(lambda _: colors, subset=[t("img_col_trend")], axis=0),
                 hide_index=True, width="stretch",
             )
-        st.link_button("⬇️ Carte de la date B (GeoTIFF, pour QGIS)", maps["geotiff_b"])
-        st.caption(
-            "Les indices montrent un changement de vigueur, d'eau ou de chlorophylle, pas sa cause : "
-            "une baisse localisée se vérifie au champ (irrigation, maladie, ravageur, carence)."
-        )
+        st.link_button(t("img_geotiff"), maps["geotiff_b"])
+        st.caption(t("img_cause_note"))
 
     if day_a != day_b:
         row_a = df[df["date"] == pd.Timestamp(day_a)].iloc[0]
@@ -317,13 +313,13 @@ def render_imagery(coordinates: List[List[float]], crop: str | None = None, demo
             fractions = None
         render_interpretation(interpret_change(
             {k: row_a[k] for k in SERIES_INDICES}, {k: row_b[k] for k in SERIES_INDICES},
-            day_a, day_b, crop=crop, fractions=fractions,
+            day_a, day_b, crop=crop, fractions=fractions, lang=lang,
         ))
     else:
-        st.info("Choisissez deux dates différentes pour obtenir l'interprétation du changement.")
+        st.info(t("img_pick_two"))
 
-    st.markdown("**Évolution de la parcelle sur la période** (moyenne à chaque image)")
-    chosen = st.multiselect("Indices", SERIES_INDICES, default=["NDVI", "NDMI", "NDRE"], key="img_series_idx")
+    st.markdown(t("img_series_title"))
+    chosen = st.multiselect(t("img_series_pick"), SERIES_INDICES, default=["NDVI", "NDMI", "NDRE"], key="img_series_idx")
     if chosen:
         st.plotly_chart(_plot_series(df, chosen, day_a, day_b), width="stretch",
                         config={"displayModeBar": False})

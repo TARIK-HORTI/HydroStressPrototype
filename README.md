@@ -54,6 +54,7 @@ HydroStressPrototype/
 ├── generate_training_data.py  # Dataset synthétique calé sur les climats des zones
 ├── train_model.py             # Entraînement Random Forest + calibration (CLI)
 ├── predict.py                 # Prédiction, interprétation, recommandations locales
+├── i18n.py / imagery_text.py  # Langues de l'interface : français, arabe (droite à gauche), anglais
 ├── imagery.py / imagery_ui.py # Cartes satellite : stress hydrique, état sanitaire, développement, comparaison de dates
 ├── app.py                     # Tableau de bord Streamlit (une seule page)
 ├── report.py                  # Rapport d'analyse (export HTML)
@@ -120,6 +121,14 @@ Tout se passe sur une seule page :
 5. Lire le rapport sous la carte et le télécharger (HTML imprimable en PDF, ou JSON)
 
 Le bouton **Voir un exemple** affiche un rapport avec des données de démonstration (sans Earth Engine), clairement signalées comme telles. Les informations sur le modèle et une simulation manuelle sont en bas de page.
+
+### Langues
+
+Le sélecteur en haut à droite passe l'interface en **français**, **العربية** (lecture de droite à gauche) ou
+**English**. Le choix est gardé dans l'URL (`?lang=ar`, `?lang=en`) pour partager un lien dans la bonne langue.
+Sont traduits : l'en-tête, le panneau d'analyse, la section des cartes satellite, le guide des indices et
+l'interprétation automatique. Le rapport détaillé, les recommandations du modèle et les sections du bas de page
+restent en français pour l'instant ; les noms de zones et de cultures aussi.
 
 ### Cartes satellite et suivi à distance
 

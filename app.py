@@ -28,6 +28,7 @@ from streamlit_folium import st_folium
 from demo import make_demo_extraction
 from farm_ui import render_farm_training
 from contrib_ui import render_contribution
+from i18n import LANGS, RTL_LANGS, get_lang, set_lang, t
 from imagery_ui import render_imagery
 from extract_data import (
     DataPipeline,
@@ -181,37 +182,28 @@ def hero(predictor):
     synthetic = meta.get("data_source") == "synthetic"
     chips = [
         "🛰️ Sentinel-2 · 10 m", "🌧️ CHIRPS · pluie quotidienne", "🌡️ ERA5-Land · T° & humidité",
-        "🤖 Random Forest", "🗺️ Cartes satellite : eau, santé, croissance", f"📍 {len(ZONES)} zones agricoles",
+        "🤖 Random Forest", t("chip_maps"), t("chip_zones", n=len(ZONES)),
     ]
     chips_html = "".join(f"<span class='hs-chip'>{c}</span>" for c in chips)
     if synthetic:
-        chips_html += "<span class='hs-chip warn'>Modèle de démonstration (données synthétiques)</span>"
+        chips_html += f"<span class='hs-chip warn'>{t('chip_synthetic')}</span>"
     elif str(meta.get("data_source", "")).startswith("terrain:"):
-        chips_html += f"<span class='hs-chip'>🌱 Modèle entraîné sur des données réelles de {model_origin(meta)}</span>"
+        chips_html += f"<span class='hs-chip'>{t('chip_real', origin=model_origin(meta))}</span>"
     beta_badge = "<span class='hs-beta'>BÊTA</span>" if IS_BETA else ""
     by = f"{BRAND} · " if BRAND else ""
-    beta_bar = (
-        f"<div class='hs-betabar'>🧪 <b>{by}Version bêta — démonstration.</b> Cette plateforme est une "
-        "version de test en cours de développement : les résultats sont indicatifs et ne remplacent pas "
-        "l'avis d'un conseiller agricole. Le service officiel sera ouvert prochainement.</div>"
-        if IS_BETA else ""
-    )
+    beta_bar = f"<div class='hs-betabar'>{t('beta_bar', by=by)}</div>" if IS_BETA else ""
     st.markdown(
         f"""
 {beta_bar}
 <div class="hs-hero">
   <h1>💧 HydroStress <span>Maroc</span>{beta_badge}</h1>
-  <p>Suivi du stress hydrique des parcelles agricoles partout au Maroc (Gharb, Saïs, Tadla, Haouz,
-  Chaouia-Doukkala, Souss-Massa, Oriental, oasis du Tafilalet et du Drâa), par télédétection et
-  apprentissage automatique. Choisissez une zone, dessinez votre parcelle et obtenez un diagnostic
-  avec des recommandations adaptées à la région et à la culture, ainsi que les cartes satellite du stress
-  hydrique, de l'état sanitaire et du développement de la végétation pour suivre la ferme à distance.</p>
+  <p>{t('hero_intro')}</p>
   {chips_html}
 </div>
 <div class="hs-steps">
-  <div class="hs-step"><b>ÉTAPE 1</b><div>Choisissez une région et dessinez la parcelle sur la carte satellite.</div></div>
-  <div class="hs-step"><b>ÉTAPE 2</b><div>Indiquez la culture et la date, puis lancez l'analyse.</div></div>
-  <div class="hs-step"><b>ÉTAPE 3</b><div>Comparez les cartes satellite entre deux dates, lisez le rapport et téléchargez-le.</div></div>
+  <div class="hs-step"><b>{t('step', n=1)}</b><div>{t('step1')}</div></div>
+  <div class="hs-step"><b>{t('step', n=2)}</b><div>{t('step2')}</div></div>
+  <div class="hs-step"><b>{t('step', n=3)}</b><div>{t('step3')}</div></div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -589,6 +581,27 @@ def render_simulation(predictor):
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
+def language_switcher():
+    """Choix de la langue (Français, العربية, English), mémorisé dans l'URL (?lang=ar) pour le partage."""
+    if "lang" not in st.session_state:
+        set_lang(st.query_params.get("lang", "fr"))
+    _, c_lang = st.columns([5, 1])
+    with c_lang:
+        lang = st.selectbox(t("lang_label"), list(LANGS), index=list(LANGS).index(get_lang()),
+                            format_func=LANGS.get, key="lang_select", label_visibility="collapsed")
+    if lang != get_lang():
+        set_lang(lang)
+        st.query_params["lang"] = lang
+        st.rerun()
+    if lang in RTL_LANGS:  # arabe : lecture de droite à gauche (les cartes et graphiques restent tels quels)
+        st.markdown(
+            "<style>.block-container{direction:rtl;text-align:right;}"
+            ".block-container iframe,.block-container .js-plotly-plot,[data-testid='stDataFrame']{direction:ltr;}"
+            ".hs-hero h1 span.hs-beta{margin-left:0;margin-right:10px;}</style>",
+            unsafe_allow_html=True,
+        )
+
+
 def main():
     predictor = get_predictor(model_version())
     if isinstance(predictor, Exception):
@@ -596,34 +609,35 @@ def main():
         st.info("Entraînez un modèle : `python train_model.py training_data.csv --source synthetic`")
         return
 
+    language_switcher()
     hero(predictor)
 
     col_map, col_panel = st.columns([1.65, 1], gap="large")
 
     with col_panel:
-        st.markdown("<div class='hs-section'>Zone et paramètres</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('sec_params')}</div>", unsafe_allow_html=True)
         c_zone, c_place = st.columns(2)
         with c_zone:
-            zone_choice = st.selectbox("Région agricole", ["Tout le Maroc"] + list(ZONES),
-                                       format_func=lambda z: ZONES[z]["name"] if z in ZONES else z)
+            zone_choice = st.selectbox(t("region"), ["Tout le Maroc"] + list(ZONES),
+                                       format_func=lambda z: ZONES[z]["name"] if z in ZONES else t("all_morocco"))
         with c_place:
             places = ["Toute la région"] + (list(ZONES[zone_choice]["places"]) if zone_choice in ZONES else [])
-            place = st.selectbox("Localité", places, disabled=zone_choice not in ZONES)
+            place = st.selectbox(t("place"), places, disabled=zone_choice not in ZONES,
+                                 format_func=lambda p: t("all_region") if p == "Toute la région" else p)
         # Cultures : celles de la zone choisie ou détectée en premier, puis les autres
         crop_zone = zone_choice if zone_choice in ZONES else st.session_state.detected_zone
         zone_crops = ZONES[crop_zone]["crops"] if crop_zone in ZONES else []
-        crop = st.selectbox("Culture de la parcelle", zone_crops + [c for c in CROPS if c not in zone_crops])
+        crop = st.selectbox(t("crop"), zone_crops + [c for c in CROPS if c not in zone_crops])
         c_date, c_win = st.columns(2)
         with c_date:
             analysis_date = st.date_input(
-                "Date d'analyse", value=datetime.now() - timedelta(days=10),
+                t("analysis_date"), value=datetime.now() - timedelta(days=10),
                 min_value=datetime(2017, 4, 1), max_value=datetime.now() - timedelta(days=5),
-                help="ERA5-Land et CHIRPS sont publiés avec environ une semaine de retard.",
+                help=t("analysis_date_help"),
             )
         with c_win:
-            lookback = st.select_slider("Fenêtre satellite", options=[15, 20, 30, 45, 60], value=30,
-                                        format_func=lambda d: f"{d} jours",
-                                        help="Période du composite Sentinel-2 sans nuages.")
+            lookback = st.select_slider(t("window"), options=[15, 20, 30, 45, 60], value=30,
+                                        format_func=lambda d: t("days", d=d), help=t("window_help"))
 
     if zone_choice not in ZONES:
         center, zoom = MAP_CENTER, MAP_ZOOM
@@ -634,7 +648,7 @@ def main():
         center, zoom = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)), 9
 
     with col_map:
-        st.markdown("<div class='hs-section'>Carte · dessinez votre parcelle</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hs-section'>{t('sec_map')}</div>", unsafe_allow_html=True)
         map_data = st_folium(
             build_map(center, zoom), height=560, use_container_width=True,
             returned_objects=["last_active_drawing"], key=f"map_{zone_choice}_{place}",
@@ -657,27 +671,19 @@ def main():
                 if st.session_state.detected_zone != zone_id:
                     st.session_state.detected_zone = zone_id
                     st.rerun()  # met à jour la liste des cultures
-                far = (f"<br><span style='color:#FCD34D'>⚠ À {dist:.0f} km de la localité de référence la plus "
-                       f"proche : seuils et recommandations approximatifs.</span>") if dist > 150 else ""
-                st.markdown(
-                    f"<div class='hs-parcel'>✅ <b>Parcelle prête</b> · {area_ha:.2f} ha · "
-                    f"{len(coordinates) - 1} sommets<br>Centre : {c.y:.4f}, {c.x:.4f}<br>"
-                    f"Zone détectée : <b>{ZONES[zone_id]['name']}</b> (près de {near}){far}</div>",
-                    unsafe_allow_html=True,
-                )
+                far = t("parcel_far", d=dist) if dist > 150 else ""
+                ready_html = t("parcel_ready", ha=area_ha, n=len(coordinates) - 1, lat=c.y, lon=c.x,
+                               zone=ZONES[zone_id]["name"], near=near, far=far)
+                st.markdown(f"<div class='hs-parcel'>{ready_html}</div>", unsafe_allow_html=True)
             except ValueError as e:
                 parcel_error = str(e)
                 st.markdown(f"<div class='hs-banner'>❌ {parcel_error}</div>", unsafe_allow_html=True)
         else:
-            st.markdown(
-                "<div class='hs-parcel'>✏️ Utilisez l'outil <b>rectangle</b> ou <b>polygone</b> de la carte "
-                "pour dessiner votre parcelle (≤ 10 km², au Maroc).</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"<div class='hs-parcel'>{t('parcel_draw')}</div>", unsafe_allow_html=True)
 
         ready = coordinates is not None and parcel_error is None
-        analyse = st.button("🔍 Analyser la parcelle", type="primary", width="stretch", disabled=not ready)
-        demo = st.button("Voir un exemple (données de démonstration)", width="stretch", disabled=not ready)
+        analyse = st.button(t("btn_analyse"), type="primary", width="stretch", disabled=not ready)
+        demo = st.button(t("btn_demo"), width="stretch", disabled=not ready)
 
         parcel_key = json.dumps([coordinates, str(analysis_date), crop, lookback]) if coordinates else None
         if parcel_key != st.session_state.parcel_key:
@@ -696,25 +702,23 @@ def main():
 
     if st.session_state.result:
         st.divider()
+        if t("report_lang_note"):
+            st.caption(t("report_lang_note"))
         render_report(st.session_state.result)
 
     st.divider()
-    with st.expander("🤝 Aidez-nous à améliorer le modèle : partagez vos données"):
+    with st.expander(t("exp_contrib")):
         render_contribution()
-    with st.expander("🤖 À propos du modèle"):
+    with st.expander(t("exp_model")):
         render_model_section(predictor)
-    with st.expander("🎛️ Simulation manuelle (sans satellite)"):
+    with st.expander(t("exp_sim")):
         render_simulation(predictor)
-    with st.expander("🌴 Entraîner sur ma ferme (données réelles)"):
+    with st.expander(t("exp_farm")):
         render_farm_training()
 
     owner = f"{BRAND} · " if BRAND else ""
-    stage = "Version bêta (démonstration) · " if IS_BETA else ""
-    st.markdown(
-        f"<div class='hs-foot'>HydroStress Maroc · {owner}{stage}Données : Copernicus Sentinel-2, CHIRPS (UCSB-CHG), "
-        "ERA5-Land (ECMWF) via Google Earth Engine · Résultats indicatifs</div>",
-        unsafe_allow_html=True,
-    )
+    stage = t("footer_beta") if IS_BETA else ""
+    st.markdown(f"<div class='hs-foot'>{t('footer', owner=owner, stage=stage)}</div>", unsafe_allow_html=True)
 
 
 main()
