@@ -294,9 +294,11 @@ IMAGERY_TEXT: Dict[str, Dict[str, str]] = {
                      "en": "Comparing the two images pixel by pixel…"},
     "zn_error": {"fr": "Détection impossible : {e}", "ar": "تعذّر الكشف: {e}", "en": "Detection failed: {e}"},
     "zn_none": {
-        "fr": "Aucune zone d'au moins 500 m² n'a changé de façon notable entre les deux dates.",
-        "ar": "لم تتغيّر أي منطقة تفوق 500 م² بشكل ملحوظ بين التاريخين.",
-        "en": "No zone of at least 500 m² changed notably between the two dates.",
+        "fr": "Aucune zone de végétation d'au moins 500 m² n'a changé de façon notable entre les deux dates "
+              "(le sol nu n'est pas analysé).",
+        "ar": "لم تتغيّر أي منطقة نباتية تفوق 500 م² بشكل ملحوظ بين التاريخين (التربة العارية لا تُحلَّل).",
+        "en": "No vegetated zone of at least 500 m² changed notably between the two dates (bare soil is not "
+              "analysed).",
     },
     "zn_found": {"fr": "{n} zone(s) à visiter, de la plus prioritaire à la moins prioritaire.",
                  "ar": "{n} منطقة للزيارة، من الأكثر أولوية إلى الأقل.",

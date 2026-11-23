@@ -562,6 +562,7 @@ ZONE_CATEGORIES = {
     4: {"key": "vigor", "color": "#A855F7", "weight": 1},     # vigueur seule
 }
 
+MIN_VEGETATION_NDVI = 0.2  # en dessous à A et à B : sol nu, pas de zone signalée
 MIN_ZONE_PIXELS = 5      # 5 pixels de 10 m = 500 m² : en dessous, bruit ou un seul arbre
 MAX_ZONES = 12
 PIXEL_AREA_M2 = 100.0
@@ -590,7 +591,10 @@ def ee_change_zones(coordinates: List[List[float]], day_a: date, day_b: date, re
     vigor = d.select("NDVI").lt(-PIXEL_THRESHOLDS["NDVI"])
     cat = (ee.Image(0).where(vigor, 4).where(chloro, 2).where(water, 1).where(water.And(chloro), 3)
            .rename("cat").toInt().clip(geometry))
-    cat = cat.updateMask(cat.gt(0))
+    # Seulement là où il y a de la végétation à l'une des deux dates : sur sol nu ou rocher,
+    # les ombres du relief et l'humidité du sol créeraient de fausses alertes
+    vegetated = ia.select("NDVI").max(ib.select("NDVI")).gt(MIN_VEGETATION_NDVI)
+    cat = cat.updateMask(cat.gt(0).And(vegetated))
     cat = cat.updateMask(cat.connectedPixelCount(256, True).gte(min_pixels))
 
     proj = ee_collection(geometry, day_b.isoformat(), (day_b + timedelta(days=1)).isoformat()) \
