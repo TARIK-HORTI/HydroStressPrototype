@@ -100,6 +100,10 @@ def test_demo_extraction_and_html_report():
     assert report["parcel"]["area_ha"] == 30.0
     html = report_to_html(report)
     assert "DÉMONSTRATION" in html and "Erfoud" in html and "<script" not in html
+    ar = report_to_html(report, lang="ar", zone_label="الرشيدية – تافيلالت (قرب Erfoud)")
+    assert 'dir="rtl"' in ar and "تقرير الإجهاد المائي" in ar and "النخيل" in ar
+    en = report_to_html(report, lang="en")
+    assert "Water stress report" in en and "Date palm" in en
 
 
 def test_zone_adjusts_ndvi_threshold():

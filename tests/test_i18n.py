@@ -3,6 +3,7 @@ from datetime import date
 
 from i18n import GLOSSARY_TEXT, IMAGERY_TEXT, LANGS, UI, set_lang, t
 from imagery import LAYERS, glossary, interpret_change, layer_text, theme_label, THEMES
+from i18n_pages import PAGES
 from imagery_text import INTERP, LAYER_TEXT, THEME_TEXT
 
 
@@ -15,6 +16,7 @@ def all_tables():
     yield from IMAGERY_TEXT.items()
     yield from INTERP.items()
     yield from THEME_TEXT.items()
+    yield from PAGES.items()
     for k, fields in GLOSSARY_TEXT.items():
         for f, entry in fields.items():
             yield f"{k}.{f}", entry
@@ -24,8 +26,6 @@ def test_every_text_has_three_languages_with_same_placeholders():
     for key, entry in all_tables():
         for lang in LANGS:
             assert lang in entry, (key, lang)
-        if key == "report_lang_note":  # vide en français, volontairement
-            continue
         ref = placeholders(entry["fr"])
         for lang in LANGS:
             assert entry[lang] or not entry["fr"], (key, lang)

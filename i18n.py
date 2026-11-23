@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Dict
 
+from i18n_pages import PAGES
+
 LANGS = {"fr": "Français", "ar": "العربية", "en": "English"}
 DEFAULT_LANG = "fr"
 RTL_LANGS = {"ar"}
@@ -62,7 +64,7 @@ def pick(entry: Dict[str, str], lang: str | None = None) -> str:
 
 
 def t(key: str, lang: str | None = None, **kw) -> str:
-    entry = UI.get(key) or IMAGERY_TEXT.get(key)
+    entry = UI.get(key) or IMAGERY_TEXT.get(key) or PAGES.get(key)
     if entry is None:
         return key
     text = pick(entry, lang)
@@ -159,12 +161,6 @@ UI: Dict[str, Dict[str, str]] = {
     "btn_analyse": {"fr": "🔍 Analyser la parcelle", "ar": "🔍 تحليل القطعة", "en": "🔍 Analyse the plot"},
     "btn_demo": {"fr": "Voir un exemple (données de démonstration)", "ar": "عرض مثال (بيانات للعرض)",
                  "en": "See an example (demo data)"},
-    "report_lang_note": {
-        "fr": "",
-        "ar": "ℹ️ التقرير المفصّل والتوصيات وأقسام أسفل الصفحة متوفرة حاليًا بالفرنسية فقط.",
-        "en": "ℹ️ The detailed report, recommendations and the sections at the bottom of the page are in French "
-              "for now.",
-    },
     "exp_contrib": {"fr": "🤝 Aidez-nous à améliorer le modèle : partagez vos données",
                     "ar": "🤝 ساعدنا على تحسين النموذج: شارك بياناتك",
                     "en": "🤝 Help us improve the model: share your data"},
